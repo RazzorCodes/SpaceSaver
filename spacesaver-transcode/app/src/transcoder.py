@@ -68,12 +68,14 @@ _PIXELS_1080P = 1920 * 1080
 _stop_event = threading.Event()
 _current_file: Optional[MediaFile] = None
 _current_start_time: float = 0.0
+_current_frame_now: int = 0
+_current_frame_total: int = 0
 _current_lock = threading.Lock()
 
 
-def get_current_info() -> Tuple[Optional[MediaFile], float]:
+def get_current_info() -> Tuple[Optional[MediaFile], float, int, int]:
     with _current_lock:
-        return _current_file, _current_start_time
+        return _current_file, _current_start_time, _current_frame_now, _current_frame_total
 
 
 def get_current_file() -> Optional[MediaFile]:
@@ -81,11 +83,13 @@ def get_current_file() -> Optional[MediaFile]:
         return _current_file
 
 
-def _set_current(mf: Optional[MediaFile]) -> None:
-    global _current_file, _current_start_time  # noqa: PLW0603
+def _set_current(mf: Optional[MediaFile], total_frames: int = 0) -> None:
+    global _current_file, _current_start_time, _current_frame_now, _current_frame_total  # noqa: PLW0603
     with _current_lock:
         _current_file = mf
         _current_start_time = time.time() if mf is not None else 0.0
+        _current_frame_now = 0
+        _current_frame_total = total_frames
 
 
 def _write_progress_json(mf: MediaFile) -> None:
@@ -313,6 +317,11 @@ def _encode(mf: MediaFile, streams: list) -> None:
         except Exception:  # noqa: BLE001
             pass
 
+    # Update global state so the `/status` endpoint can instantly see both fields
+    with _current_lock:
+        global _current_frame_total  # noqa: PLW0603
+        _current_frame_total = total_frames
+
     cmd = _build_cmd(mf, tmp_path, streams)
     log.debug("ffmpeg cmd: %s", " ".join(cmd))
 
@@ -320,25 +329,37 @@ def _encode(mf: MediaFile, streams: list) -> None:
         cmd,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        bufsize=1,
+        universal_newlines=True,
     )
 
     frames_done = 0
-    for raw_line in process.stdout:
-        line = raw_line.decode("utf-8", errors="ignore").strip()
+    # process.stdout is a text stream when universal_newlines=True
+    for line in process.stdout:
+        line = line.strip()
         if line.startswith("frame="):
             try:
                 frames_done = int(line.split("=", 1)[1])
             except ValueError:
                 pass
+            
+            with _current_lock:
+                global _current_frame_now  # noqa: PLW0603
+                _current_frame_now = frames_done
+                
             if total_frames > 0:
                 progress = min(99.0, (frames_done * 100.0) / total_frames)
             else:
-                progress = 50.0  # unknown total — show as indeterminate
+                progress = 0.0  # Cannot compute percent, wait for total_frames
             db.update_progress(mf.uuid, progress)
 
     process.wait()
     if process.returncode != 0:
-        stderr_out = process.stderr.read().decode("utf-8", errors="ignore")
+        stderr_out = ""
+        if process.stderr:
+            out_bytes = process.stderr.read()
+            if out_bytes:
+                stderr_out = out_bytes.decode("utf-8", errors="ignore").strip()
         raise RuntimeError(
             f"ffmpeg exited {process.returncode}: {stderr_out[-600:]}"
         )
@@ -415,7 +436,7 @@ def _process_file(mf: MediaFile) -> None:
         _remove_progress_json(mf.uuid)
 
     finally:
-        _set_current(None)
+        _set_current(None, 0)
 
 
 def _on_startup_cleanup() -> None:

@@ -15,17 +15,17 @@ ARG CACHE_BUST
 WORKDIR /app
 
 # Install Python dependencies (re-runs every build so new packages are picked up)
-COPY requirements.txt .
+COPY src/requirements.txt .
 RUN pip install --upgrade pip && \
     pip install -r requirements.txt
 
-# Copy application source
-COPY *.py .
-COPY version.txt .
+# Copy application source and tests
+COPY . .
+ENV PYTHONPATH=/app/src
 
 # Expose the HTTP API port
 EXPOSE 8000
 
 # Run the Flask application (threaded mode — Flask handles the two background
 # threads and API requests concurrently within the same process)
-CMD ["python", "app.py"]
+CMD ["python", "src/app.py"]

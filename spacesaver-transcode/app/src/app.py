@@ -44,7 +44,7 @@ app = Flask(__name__)
 _started = False
 _startup_lock = threading.Lock()
 _start_time = time.time()
-_VERSION_FILE = pathlib.Path(__file__).parent / "version.txt"
+_VERSION_FILE = pathlib.Path(__file__).parent.parent / "version.txt"
 
 
 def _read_version() -> str:
@@ -106,7 +106,7 @@ def status():
     error = counts.get(FileStatus.ERROR.value, 0)
     skipped = counts.get(FileStatus.SKIPPED.value, 0)
 
-    current, current_start = transcoder.get_current_info()
+    current, current_start, frame_now, frame_total = transcoder.get_current_info()
     current_info = None
     eta_seconds = None
 
@@ -115,10 +115,15 @@ def status():
         current_info = {
             "uuid": current.uuid,
             "name": f"{current.clean_title} {current.year_or_episode}".strip(),
-            "progress": round(progress, 1),
+            "progress": {
+                "frame": {
+                    "now": frame_now,
+                    "total": frame_total
+                }
+            },
         }
         # ETA based on file start time
-        if progress > 1.0 and current_start > 0:
+        if frame_now > 100 and current_start > 0:
             elapsed = time.time() - current_start
             rate = progress / max(elapsed, 1.0)
             remaining = (100.0 - progress) / max(rate, 0.01)

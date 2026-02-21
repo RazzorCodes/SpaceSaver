@@ -34,7 +34,9 @@ class MediaFile:
     clean_title: str
     year_or_episode: str
     status: FileStatus = FileStatus.PENDING
-    progress: float = 0.0          # 0.0 – 100.0
+    progress: float = 0.0          # 0.0 – 100.0 (historic)
+    frame_now: int = 0             # current frame tracker
+    frame_total: int = 0           # total estimated frames
     error_count: int = 0
     error_msg: Optional[str] = None
     tv_crf: Optional[int] = None   # per-file override
@@ -67,22 +69,23 @@ class MediaFile:
             "name": f"{self.clean_title} {self.year_or_episode}".strip(),
             "status": self.status.value,
             "media_type": self.media_type.value,
-            "progress": round(self.progress, 1),
+            "progress": {
+                "frame": {
+                    "now": self.frame_now,
+                    "total": self.frame_total
+                }
+            },
         }
         if full:
-            base.update(
-                {
-                    "file_hash": self.file_hash,
-                    "source_path": self.source_path,
-                    "dest_path": self.dest_path,
-                    "error_count": self.error_count,
-                    "error_msg": self.error_msg,
-                    "quality_overrides": {
-                        "tv_crf": self.tv_crf,
-                        "movie_crf": self.movie_crf,
-                        "tv_res_cap": self.tv_res_cap,
-                        "movie_res_cap": self.movie_res_cap,
-                    },
-                }
-            )
+            base["file_hash"] = self.file_hash
+            base["source_path"] = self.source_path
+            base["dest_path"] = self.dest_path
+            base["error_count"] = self.error_count
+            base["error_msg"] = self.error_msg
+            base["quality_overrides"] = {
+                "tv_crf": self.tv_crf,
+                "movie_crf": self.movie_crf,
+                "tv_res_cap": self.tv_res_cap,
+                "movie_res_cap": self.movie_res_cap,
+            }
         return base
