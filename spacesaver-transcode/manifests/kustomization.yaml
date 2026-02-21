@@ -16,8 +16,9 @@ resources:
 # Override the registry / tag without editing deployment.yaml directly.
 # In an overlay: set `newName` and `newTag` under images[].
 images:
-  - name: 192.168.0.127:5000/spacesaver
-    tag: latest
+  - name: 192.168.0.127:5000/spacesaver-transcode
+    newName: 192.168.0.127:5000/spacesaver
+    newTag: latest
 
 # ── StorageClass patches ──────────────────────────────────────────────────────
 # Uses nfs-storage-slow — the NFS dynamic provisioner already present in the
