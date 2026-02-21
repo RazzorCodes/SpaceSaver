@@ -2,7 +2,7 @@
 # and the .spacesaver-transcode flat tracking file.
 #
 # This volume is READ-WRITE for the transcoder pod.
-# storageClassName: Change to match your cluster (see pvc-source.yaml for options).
+# storageClassName: Set via kustomize overlay (kustomization.yaml → patches).
 #
 # Size: must be large enough to hold your entire finished library.
 # A 1Ti source can grow slightly or shrink significantly after H.265 encoding.
@@ -10,19 +10,16 @@
 #
 # ReadWriteMany (RWX) is required if you ever want to run multiple replicas
 # (currently the deployment uses 1 replica, but RWX is set for future-proofing).
-
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: spacesaver-dest
-  namespace: kube-idle
   labels:
     app: spacesaver
 spec:
   accessModes:
     - ReadWriteMany
-  storageClassName: nas-slow-volume # <-- CHANGE to your storage class
+  storageClassName: nas-slow-volume
   resources:
     requests:
-      storage: 490Gi # <-- CHANGE to the size of your output library
----
+      storage: 490Gi

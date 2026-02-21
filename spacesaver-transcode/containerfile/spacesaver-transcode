@@ -1,12 +1,11 @@
 # syntax=docker/dockerfile:1
 FROM python:3.12-slim AS base
 
-# Install ffmpeg (includes ffprobe) from Debian repos
+# Install ffmpeg (includes ffprobe) from Debian repos — cached layer
 RUN apt-get update && \
     apt-get install -y --no-install-recommends ffmpeg && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
-RUN pip install --no-cache-dir -r requirements.txt
 
 FROM base AS app
 
@@ -15,9 +14,10 @@ ARG CACHE_BUST
 
 WORKDIR /app
 
-# Install Python dependencies first (layer-cached)
+# Install Python dependencies (re-runs every build so new packages are picked up)
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --upgrade pip && \
+    pip install -r requirements.txt
 
 # Copy application source
 COPY *.py .

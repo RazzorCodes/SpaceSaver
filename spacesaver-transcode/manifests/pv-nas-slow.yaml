@@ -1,0 +1,19 @@
+# PersistentVolume backed by NAS NFS — statically provisioned.
+# The PVCs in this project bind to this PV via storageClassName + accessMode matching.
+#
+# This is a CLUSTER-SCOPED resource; apply without -n / without a namespace.
+# kubectl apply -f pv-nas-slow.yaml
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: nas-slow-volume
+spec:
+  capacity:
+    storage: 350Gi
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: nas-slow-volume   # must match storageClassName in PVCs
+  nfs:
+    server: nas.lan
+    path: /slow

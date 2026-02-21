@@ -1,11 +1,10 @@
-# ClusterIP service — cluster-internal only. No Ingress or LoadBalancer.
+# ClusterIP service — cluster-internal only.
 # Access the API from within the cluster at:
-#   http://spacesaver.kube-idle.svc.cluster.local:8000
+#   http://spacesaver.<namespace>.svc.cluster.local:8000
 apiVersion: v1
 kind: Service
 metadata:
   name: spacesaver
-  namespace: kube-idle
   labels:
     app: spacesaver
 spec:

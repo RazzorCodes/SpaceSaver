@@ -2,7 +2,6 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: spacesaver
-  namespace: kube-idle
   labels:
     app: spacesaver
 spec:
@@ -21,8 +20,8 @@ spec:
 
       containers:
         - name: spacesaver
-          # TODO: Replace with your registry and built image tag.
-          # Example: your-registry.example.com/spacesaver:1.0.0
+          # Registry and tag are overridden by kustomization.yaml → images[].
+          # The name here must match the `name:` field in that images[] entry.
           image: your-registry/spacesaver:latest
           imagePullPolicy: Always
           ports:
@@ -88,7 +87,7 @@ spec:
         # For large 4K files (up to ~80 GB), ensure the node has enough local disk.
         #
         # TO SWITCH TO A DEDICATED PVC:
-        #   1. Apply spacesaver/manifests/pvc-workdir.yaml
+        #   1. Add pvc-workdir.yaml to kustomization.yaml resources list.
         #   2. Replace the emptyDir below with:
         #        persistentVolumeClaim:
         #          claimName: spacesaver-workdir

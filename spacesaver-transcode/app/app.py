@@ -136,6 +136,16 @@ def status():
     )
 
 
+# ─── /current ────────────────────────────────────────────────────────────────
+
+@app.get("/current")
+def current():
+    mf = transcoder.get_current_file()
+    if mf is None:
+        return "", 204
+    return jsonify(mf.to_dict(full=True))
+
+
 # ─── /config/quality ─────────────────────────────────────────────────────────
 
 @app.get("/config/quality")

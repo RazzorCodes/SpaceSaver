@@ -1,6 +1,6 @@
 # PVC for the source media library (read-only).
 #
-# storageClassName: Change this to match your cluster's storage backend.
+# storageClassName: Set via kustomize overlay (kustomization.yaml → patches).
 #   Common values:
 #     nfs           — NFS Provisioner
 #     longhorn      — Longhorn
@@ -16,13 +16,12 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: spacesaver-source
-  namespace: kube-idle
   labels:
     app: spacesaver
 spec:
   accessModes:
     - ReadOnlyMany
-  storageClassName: nas-slow-volume # <-- CHANGE to your storage class
+  storageClassName: nas-slow-volume
   resources:
     requests:
-      storage: 490Gi # <-- CHANGE to the size of your output library
+      storage: 490Gi

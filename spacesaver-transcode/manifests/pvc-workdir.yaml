@@ -20,23 +20,23 @@
 #
 #   If you want to use a dedicated PVC instead (e.g., for a multi-node cluster
 #   or to guarantee storage class placement):
-#     1. Apply this manifest (after editing storageClassName and size).
-#     2. In deployment.yaml, replace the emptyDir volume with a PVC reference
-#        to this PVC (see the comment in deployment.yaml).
+#     1. Add this file to kustomization.yaml resources list.
+#     2. In deployment.yaml, replace the emptyDir volume with a PVC reference:
+#          persistentVolumeClaim:
+#            claimName: spacesaver-workdir
 #
-# NOTE: This manifest is intentionally NOT applied by default. Do not apply
-# it unless you intend to use a PVC for workdir.
+# NOTE: This manifest is intentionally NOT in the default resources list.
+# Do not apply it unless you intend to use a PVC for workdir.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: spacesaver-workdir
-  namespace: kube-idle
   labels:
     app: spacesaver
 spec:
   accessModes:
-    - ReadWriteOnce # Single-node only; fine since we run one replica
-  storageClassName: local-path # <-- CHANGE: use fast local storage (NVMe)
+    - ReadWriteOnce  # Single-node only; fine since we run one replica
+  storageClassName: local-path  # use fast local storage (NVMe preferred)
   resources:
     requests:
-      storage: 20Gi # <-- CHANGE: at least 80 Gi for 4K content
+      storage: 20Gi  # at least 80 Gi for 4K content

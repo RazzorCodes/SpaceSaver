@@ -1,0 +1,52 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: kube-idle
+
+resources:
+  - priorityclass.yaml
+  - configmap.yaml
+  - pvc-source.yaml
+  - pvc-dest.yaml
+  - deployment.yaml
+  - service.yaml
+  - ingress.yaml
+
+# ── Image ────────────────────────────────────────────────────────────────────
+# Override the registry / tag without editing deployment.yaml directly.
+# In an overlay: set `newName` and `newTag` under images[].
+images:
+  - name: your-registry/spacesaver
+    newName: your-registry/spacesaver   # <-- CHANGE to your registry path
+    newTag: latest                      # <-- CHANGE to the image tag you want
+
+# ── StorageClass patches ──────────────────────────────────────────────────────
+# These strategic-merge patches set storageClassName on every PVC.
+# Override them per-overlay to target different storage backends.
+patches:
+  - patch: |-
+      - op: replace
+        path: /spec/storageClassName
+        value: nas-slow-volume          # <-- CHANGE to your StorageClass name
+    target:
+      kind: PersistentVolumeClaim
+      name: spacesaver-source
+  - patch: |-
+      - op: replace
+        path: /spec/storageClassName
+        value: nas-slow-volume          # <-- CHANGE to your StorageClass name
+    target:
+      kind: PersistentVolumeClaim
+      name: spacesaver-dest
+
+# ── Node pinning ──────────────────────────────────────────────────────────────
+# Pins the pod to a specific node by hostname.
+# Change the value to the output of: kubectl get nodes -o name
+  - patch: |-
+      - op: add
+        path: /spec/template/spec/nodeSelector
+        value:
+          kubernetes.io/hostname: worker-node-01  # <-- CHANGE to your node name
+    target:
+      kind: Deployment
+      name: spacesaver
