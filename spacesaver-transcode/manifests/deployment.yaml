@@ -69,16 +69,17 @@ spec:
             failureThreshold: 5
 
       volumes:
-        # Source media library — read-only
+        # Source media library — mapped directly to NFS
         - name: source
-          persistentVolumeClaim:
-            claimName: spacesaver-source
-            readOnly: true
+          nfs:
+            server: nas.lan
+            path: /slow/media
 
         # Output library, SQLite DB, progress files, and flat tracking file
         - name: dest
-          persistentVolumeClaim:
-            claimName: spacesaver-dest
+          nfs:
+            server: nas.lan
+            path: /slow/media
 
         # Encode working directory — ephemeral by default.
         # This uses the node's local disk (up to the kubelet's eviction threshold).
