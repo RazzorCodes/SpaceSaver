@@ -20,7 +20,7 @@ MANIFESTS_DIR="$SCRIPT_DIR/manifests"
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 # Registry running on the master node (hostNetwork, plain HTTP)
-REGISTRY_HOST="homelab-master-01:5000"   # <-- CHANGE to master hostname/IP
+REGISTRY_HOST="192.168.0.127:5000"   # <-- CHANGE to master hostname/IP
 
 # Node to run the Kaniko build job on
 BUILD_NODE="homelab-worker-01"
@@ -99,17 +99,46 @@ build_if_missing() {
     envsubst < "$MANIFESTS_DIR/job-build.yaml" \
     | kubectl apply -f -
 
-  echo "==> Waiting for build to complete (timeout: 30m)…"
-  if ! kubectl wait job/spacesaver-build \
-      -n "$NAMESPACE" \
-      --for=condition=complete \
-      --timeout=30m; then
-    echo "ERROR: Build job failed or timed out. Logs:"
-    kubectl -n "$NAMESPACE" logs job/spacesaver-build --all-containers --tail=100 || true
+  # ── Wait for the pod to be schedulable / running ────────────────────────
+  echo "==> Waiting for build pod to start…"
+  local build_pod=""
+  for i in $(seq 1 72); do   # 72 × 5s = 6 min max wait for scheduling
+    build_pod=$(kubectl -n "$NAMESPACE" get pods \
+      -l job-name=spacesaver-build \
+      -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+    if [[ -n "$build_pod" ]]; then
+      local phase
+      phase=$(kubectl -n "$NAMESPACE" get pod "$build_pod" \
+        -o jsonpath='{.status.phase}' 2>/dev/null || true)
+      [[ "$phase" == "Running" || "$phase" == "Succeeded" || "$phase" == "Failed" ]] && break
+    fi
+    echo "    ($i) pod not ready yet — retrying in 5s…"
+    sleep 5
+  done
+
+  if [[ -z "$build_pod" ]]; then
+    echo "ERROR: Build pod never started. Check node/image/configmap."
+    kubectl -n "$NAMESPACE" describe job spacesaver-build || true
     exit 1
   fi
 
-  echo "==> Build succeeded: ${REGISTRY_HOST}/${IMAGE_NAME}:${tag}"
+  # ── Stream logs live ──────────────────────────────────────────────────────
+  echo "==> Streaming Kaniko build logs (pod: $build_pod)…"
+  echo "────────────────────────────────────────────────────"
+  kubectl -n "$NAMESPACE" logs -f "$build_pod" --all-containers || true
+  echo "────────────────────────────────────────────────────"
+
+  # ── Check final job outcome ───────────────────────────────────────────────
+  if kubectl wait job/spacesaver-build \
+      -n "$NAMESPACE" \
+      --for=condition=complete \
+      --timeout=60s 2>/dev/null; then
+    echo "==> Build succeeded: ${REGISTRY_HOST}/${IMAGE_NAME}:${tag}"
+  else
+    echo "ERROR: Build job failed. Last 50 lines:"
+    kubectl -n "$NAMESPACE" logs "$build_pod" --all-containers --tail=50 || true
+    exit 1
+  fi
 }
 
 # ── Deploy ────────────────────────────────────────────────────────────────────

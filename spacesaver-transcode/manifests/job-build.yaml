@@ -46,10 +46,13 @@ spec:
             # Push versioned tag and :latest
             - --destination=${REGISTRY_HOST}/${IMAGE_NAME}:${IMAGE_TAG}
             - --destination=${REGISTRY_HOST}/${IMAGE_NAME}:latest
-            # Registry is plain HTTP
+            # Registry is plain HTTP (push destination)
             - --insecure
-            # Base image pulled via HTTP proxy on this node
-            - --insecure-pull
+            # Route base image pulls through local Zot mirror (which on-demand
+            # syncs from Docker Hub, ghcr.io, quay.io). Without this, Kaniko
+            # goes straight to index.docker.io and hits auth errors.
+            - --registry-mirror=${REGISTRY_HOST}
+            - --insecure-registry=${REGISTRY_HOST}
             - --cache=false
             - --verbosity=info
           volumeMounts:
