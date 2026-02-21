@@ -5,7 +5,7 @@ models.py — Dataclasses and enums for SpaceSaver.
 from __future__ import annotations
 
 import uuid as _uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
 

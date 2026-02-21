@@ -24,7 +24,8 @@ import os
 import shutil
 import subprocess
 import threading
-from typing import Optional
+import time
+from typing import Optional, Tuple
 
 import ffmpeg
 
@@ -66,7 +67,13 @@ _PIXELS_1080P = 1920 * 1080
 
 _stop_event = threading.Event()
 _current_file: Optional[MediaFile] = None
+_current_start_time: float = 0.0
 _current_lock = threading.Lock()
+
+
+def get_current_info() -> Tuple[Optional[MediaFile], float]:
+    with _current_lock:
+        return _current_file, _current_start_time
 
 
 def get_current_file() -> Optional[MediaFile]:
@@ -75,9 +82,10 @@ def get_current_file() -> Optional[MediaFile]:
 
 
 def _set_current(mf: Optional[MediaFile]) -> None:
-    global _current_file  # noqa: PLW0603
+    global _current_file, _current_start_time  # noqa: PLW0603
     with _current_lock:
         _current_file = mf
+        _current_start_time = time.time() if mf is not None else 0.0
 
 
 def _write_progress_json(mf: MediaFile) -> None:
@@ -221,7 +229,7 @@ def _build_cmd(mf: MediaFile, tmp_path: str, streams: list) -> list:
     video_streams = [s for s in streams if s.get("codec_type") == "video"]
 
     cmd = [
-        "ffmpeg", "-y",
+        "ffmpeg", "-y", "-loglevel", "error",
         "-i", mf.source_path,
         # Map all streams explicitly
         "-map", "0:v",    # all video tracks

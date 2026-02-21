@@ -9,17 +9,27 @@ import os
 import threading
 
 
+def _parse_env_int(key: str, default: int) -> int:
+    val = os.environ.get(key, "").strip()
+    if not val:
+        return default
+    try:
+        return int(val)
+    except ValueError:
+        return default
+
+
 class Config:
     """Mutable configuration object. Thread-safe via a read/write lock."""
 
     _lock = threading.RLock()
 
     def __init__(self) -> None:
-        self._tv_crf: int = int(os.environ.get("TV_CRF", "18"))
-        self._movie_crf: int = int(os.environ.get("MOVIE_CRF", "16"))
-        self._tv_res_cap: int = int(os.environ.get("TV_RES_CAP", "1080"))
-        self._movie_res_cap: int = int(os.environ.get("MOVIE_RES_CAP", "2160"))
-        self._rescan_interval: int = int(os.environ.get("RESCAN_INTERVAL", "600"))
+        self._tv_crf: int = _parse_env_int("TV_CRF", 18)
+        self._movie_crf: int = _parse_env_int("MOVIE_CRF", 16)
+        self._tv_res_cap: int = _parse_env_int("TV_RES_CAP", 1080)
+        self._movie_res_cap: int = _parse_env_int("MOVIE_RES_CAP", 2160)
+        self._rescan_interval: int = _parse_env_int("RESCAN_INTERVAL", 600)
 
     # --- Getters ---
 

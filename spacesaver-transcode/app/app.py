@@ -22,6 +22,7 @@ from __future__ import annotations
 import logging
 import os
 import pathlib
+import threading
 import time
 
 from flask import Flask, jsonify, request
@@ -41,6 +42,7 @@ log = logging.getLogger(__name__)
 app = Flask(__name__)
 
 _started = False
+_startup_lock = threading.Lock()
 _start_time = time.time()
 _VERSION_FILE = pathlib.Path(__file__).parent / "version.txt"
 
@@ -55,11 +57,13 @@ def _read_version() -> str:
 def _ensure_started() -> None:
     global _started  # noqa: PLW0603
     if not _started:
-        _started = True
-        db.init_db()
-        scanner.start()
-        transcoder.start()
-        log.info("SpaceSaver started. Uptime clock running.")
+        with _startup_lock:
+            if not _started:
+                _started = True
+                db.init_db()
+                scanner.start()
+                transcoder.start()
+                log.info("SpaceSaver started. Uptime clock running.")
 
 
 @app.before_request
@@ -102,7 +106,7 @@ def status():
     error = counts.get(FileStatus.ERROR.value, 0)
     skipped = counts.get(FileStatus.SKIPPED.value, 0)
 
-    current = transcoder.get_current_file()
+    current, current_start = transcoder.get_current_info()
     current_info = None
     eta_seconds = None
 
@@ -113,11 +117,10 @@ def status():
             "name": f"{current.clean_title} {current.year_or_episode}".strip(),
             "progress": round(progress, 1),
         }
-        # Crude ETA: assume linear progress from when file started
-        # We don't track per-file start time here, so we use a simple estimate
-        if progress > 1.0:
-            uptime = time.time() - _start_time
-            rate = progress / max(uptime, 1)
+        # ETA based on file start time
+        if progress > 1.0 and current_start > 0:
+            elapsed = time.time() - current_start
+            rate = progress / max(elapsed, 1.0)
             remaining = (100.0 - progress) / max(rate, 0.01)
             eta_seconds = int(remaining)
 
