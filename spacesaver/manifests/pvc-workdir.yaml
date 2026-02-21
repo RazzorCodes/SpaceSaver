@@ -35,8 +35,8 @@ metadata:
     app: spacesaver
 spec:
   accessModes:
-    - ReadWriteOnce   # Single-node only; fine since we run one replica
-  storageClassName: local-path   # <-- CHANGE: use fast local storage (NVMe)
+    - ReadWriteOnce # Single-node only; fine since we run one replica
+  storageClassName: local-path # <-- CHANGE: use fast local storage (NVMe)
   resources:
     requests:
-      storage: 100Gi              # <-- CHANGE: at least 80 Gi for 4K content
+      storage: 20Gi # <-- CHANGE: at least 80 Gi for 4K content

@@ -22,7 +22,7 @@ metadata:
 spec:
   accessModes:
     - ReadOnlyMany
-  storageClassName: nfs   # <-- CHANGE to your storage class
+  storageClassName: nas-slow-volume # <-- CHANGE to your storage class
   resources:
     requests:
-      storage: 1Ti         # <-- CHANGE to your source library size
+      storage: 490Gi # <-- CHANGE to the size of your output library

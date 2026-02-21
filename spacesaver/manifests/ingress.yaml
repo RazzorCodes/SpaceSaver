@@ -1,0 +1,14 @@
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: spacesaver-transcode
+  namespace: homelab-idle
+spec:
+  entryPoints:
+    - web
+  routes:
+    - match: Host(`transcode.spacesaver.lan`)
+      kind: Rule
+      services:
+        - name: spacesaver
+          port: 8000

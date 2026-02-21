@@ -10,6 +10,7 @@
 #
 # ReadWriteMany (RWX) is required if you ever want to run multiple replicas
 # (currently the deployment uses 1 replica, but RWX is set for future-proofing).
+
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -20,7 +21,8 @@ metadata:
 spec:
   accessModes:
     - ReadWriteMany
-  storageClassName: nfs    # <-- CHANGE to your storage class
+  storageClassName: nas-slow-volume # <-- CHANGE to your storage class
   resources:
     requests:
-      storage: 10Ti         # <-- CHANGE to the size of your output library
+      storage: 490Gi # <-- CHANGE to the size of your output library
+---
