@@ -312,6 +312,20 @@ def _process_file(mf: MediaFile) -> None:
 
 def _on_startup_cleanup() -> None:
     """Clean up any leftover workdir temp files from a previous crash."""
+    # Ensure the workdir is accessible and writable
+    try:
+        os.makedirs(WORKDIR, exist_ok=True)
+    except OSError as exc:
+        log.error("Cannot create workdir %s: %s — encodes will fail", WORKDIR, exc)
+
+    if not os.access(WORKDIR, os.W_OK):
+        log.error(
+            "Workdir %s is not writable. "
+            "Check volume mount permissions (run.sh: --userns=keep-id).",
+            WORKDIR,
+        )
+
+    # Remove leftover temp files from a previous crash
     try:
         for fname in os.listdir(WORKDIR):
             if fname.endswith(".mkv"):
@@ -321,6 +335,7 @@ def _on_startup_cleanup() -> None:
     except OSError:
         pass
     db.reset_in_progress()
+
 
 
 def run() -> None:

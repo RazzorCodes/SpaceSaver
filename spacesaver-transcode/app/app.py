@@ -5,6 +5,7 @@ Endpoints (all cluster-internal, no auth):
   GET  /list                     — all files (summary)
   GET  /list/<uuid>              — single file (full detail)
   GET  /status                   — queue summary, current file, ETA
+  GET  /version                  — image version string
   GET  /config/quality           — current global quality settings
   POST /config/quality           — update global quality settings
   POST /config/quality/<uuid>    — per-file quality override (+ requeue if DONE)
@@ -20,6 +21,7 @@ from __future__ import annotations
 
 import logging
 import os
+import pathlib
 import time
 
 from flask import Flask, jsonify, request
@@ -40,6 +42,14 @@ app = Flask(__name__)
 
 _started = False
 _start_time = time.time()
+_VERSION_FILE = pathlib.Path(__file__).parent / "version.txt"
+
+
+def _read_version() -> str:
+    try:
+        return _VERSION_FILE.read_text().strip()
+    except Exception:  # noqa: BLE001
+        return "unknown"
 
 
 def _ensure_started() -> None:
@@ -55,6 +65,13 @@ def _ensure_started() -> None:
 @app.before_request
 def _startup():
     _ensure_started()
+
+
+# ─── /version ───────────────────────────────────────────────────────────────
+
+@app.get("/version")
+def version():
+    return jsonify({"version": _read_version()})
 
 
 # ─── /list ───────────────────────────────────────────────────────────────────

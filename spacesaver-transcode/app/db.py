@@ -160,11 +160,16 @@ def reset_file(uuid: str) -> bool:
         if row is None:
             return False
         conn.execute(
-            "UPDATE files SET status = ?, progress = 0.0, error_msg = NULL WHERE uuid = ?",
+            """
+            UPDATE files
+            SET status = ?, progress = 0.0, error_count = 0, error_msg = NULL
+            WHERE uuid = ?
+            """,
             (FileStatus.PENDING.value, uuid),
         )
         conn.commit()
     return True
+
 
 
 def skip_file(uuid: str) -> bool:

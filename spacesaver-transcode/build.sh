@@ -1,7 +1,39 @@
+#!/usr/bin/env bash
+set -euo pipefail
 
+# ── Read current version ──────────────────────────────────────────────────────
+VERSION_FILE="app/version.txt"
+CURRENT=$(cat "$VERSION_FILE" | tr -d '[:space:]')
 
+# Parse vMAJOR.MINOR.PATCH[-SUFFIX]
+# e.g. v0.0.0-alpha  →  MAJOR=0 MINOR=0 PATCH=0 SUFFIX=alpha
+SEMVER=$(echo "$CURRENT" | grep -oP '\d+\.\d+\.\d+')
+SUFFIX=$(echo "$CURRENT" | grep -oP '(?<=-)\w+' || true)
+MAJOR=$(echo "$SEMVER" | cut -d. -f1)
+MINOR=$(echo "$SEMVER" | cut -d. -f2)
+PATCH=$(echo "$SEMVER" | cut -d. -f3)
+
+# Increment patch
+PATCH=$((PATCH + 1))
+
+if [ -n "$SUFFIX" ]; then
+    NEW_VERSION="v${MAJOR}.${MINOR}.${PATCH}-${SUFFIX}"
+else
+    NEW_VERSION="v${MAJOR}.${MINOR}.${PATCH}"
+fi
+
+echo "$NEW_VERSION" > "$VERSION_FILE"
+
+# ── Build ─────────────────────────────────────────────────────────────────────
 echo "==================================="
 echo " Building - Spacesaver (Transcode)"
+echo " Version: $NEW_VERSION"
 echo "==================================="
 
-podman build -t spacesaver-transcode:latest -f containerfile/spacesaver-transcode app
+podman build \
+    -t "spacesaver-transcode:${NEW_VERSION}" \
+    -t "spacesaver-transcode:latest" \
+    -f containerfile/spacesaver-transcode \
+    app
+
+echo "Done: spacesaver-transcode:${NEW_VERSION} (also tagged :latest)"
