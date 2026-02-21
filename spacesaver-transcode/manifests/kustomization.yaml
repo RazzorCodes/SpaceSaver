@@ -16,9 +16,8 @@ resources:
 # Override the registry / tag without editing deployment.yaml directly.
 # In an overlay: set `newName` and `newTag` under images[].
 images:
-  - name: your-registry/spacesaver            # must match image: in deployment.yaml
-    newName: homelab-master-01:5000/spacesaver  # <-- CHANGE to match REGISTRY_HOST in deploy.sh
-    newTag: latest                              # deploy.sh always pushes :latest too
+  - name: 192.168.0.127:5000/spacesaver
+    tag: latest
 
 # ── StorageClass patches ──────────────────────────────────────────────────────
 # Uses nfs-storage-slow — the NFS dynamic provisioner already present in the

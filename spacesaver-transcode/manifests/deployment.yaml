@@ -20,9 +20,7 @@ spec:
 
       containers:
         - name: spacesaver
-          # Registry and tag are overridden by kustomization.yaml → images[].
-          # The name here must match the `name:` field in that images[] entry.
-          image: your-registry/spacesaver:latest
+          image: 192.168.0.127:5000/spacesaver-transcode:latest
           imagePullPolicy: Always
           ports:
             - name: http
