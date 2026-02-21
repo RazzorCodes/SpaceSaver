@@ -1,0 +1,96 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spacesaver
+  namespace: kube-idle
+  labels:
+    app: spacesaver
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: spacesaver
+  template:
+    metadata:
+      labels:
+        app: spacesaver
+    spec:
+      # ── Scheduling: lowest possible priority, never preempt others ──
+      priorityClassName: idle-priority
+      terminationGracePeriodSeconds: 30
+
+      containers:
+        - name: spacesaver
+          # TODO: Replace with your registry and built image tag.
+          # Example: your-registry.example.com/spacesaver:1.0.0
+          image: your-registry/spacesaver:latest
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+
+          # ── Configuration from ConfigMap ──
+          envFrom:
+            - configMapRef:
+                name: spacesaver-config
+
+          # ── Resource allocation ──
+          # Near-zero requests so the scheduler can place the pod anywhere;
+          # high limits so it soaks up all idle CPU the node isn't using.
+          resources:
+            requests:
+              cpu: 10m
+              memory: 256Mi
+            limits:
+              cpu: "8"
+              memory: 8Gi
+
+          # ── Volume mounts ──
+          volumeMounts:
+            - name: source
+              mountPath: /source
+              readOnly: true
+            - name: dest
+              mountPath: /dest
+            - name: workdir
+              mountPath: /workdir
+
+          # ── Health checks ──
+          readinessProbe:
+            httpGet:
+              path: /status
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /status
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 30
+            failureThreshold: 5
+
+      volumes:
+        # Source media library — read-only
+        - name: source
+          persistentVolumeClaim:
+            claimName: spacesaver-source
+            readOnly: true
+
+        # Output library, SQLite DB, progress files, and flat tracking file
+        - name: dest
+          persistentVolumeClaim:
+            claimName: spacesaver-dest
+
+        # Encode working directory — ephemeral by default.
+        # This uses the node's local disk (up to the kubelet's eviction threshold).
+        # For large 4K files (up to ~80 GB), ensure the node has enough local disk.
+        #
+        # TO SWITCH TO A DEDICATED PVC:
+        #   1. Apply spacesaver/manifests/pvc-workdir.yaml
+        #   2. Replace the emptyDir below with:
+        #        persistentVolumeClaim:
+        #          claimName: spacesaver-workdir
+        - name: workdir
+          emptyDir: {}

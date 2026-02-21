@@ -1,0 +1,16 @@
+# PriorityClass that places SpaceSaver at the lowest possible scheduling
+# priority. Preemption is disabled so SpaceSaver never evicts other pods.
+#
+# API: scheduling.k8s.io/v1 is stable since Kubernetes 1.14.
+# This is a cluster-scoped resource — apply without -n.
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: idle-priority
+value: -1000
+preemptionPolicy: Never
+globalDefault: false
+description: >
+  Used by SpaceSaver. Lowest possible priority. Pods using this class
+  will only run when no other workload needs the resources, and they
+  will never preempt other pods.

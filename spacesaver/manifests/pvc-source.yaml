@@ -1,0 +1,28 @@
+# PVC for the source media library (read-only).
+#
+# storageClassName: Change this to match your cluster's storage backend.
+#   Common values:
+#     nfs           — NFS Provisioner
+#     longhorn      — Longhorn
+#     local-path    — Rancher local-path provisioner
+#     manual        — for statically provisioned PVs
+#
+# ReadOnlyMany (ROX) is preferred so multiple pods can read the library
+# concurrently. If your storage backend does not support ROX, use
+# ReadWriteMany (RWX) and ensure the deployment mounts it read-only.
+#
+# Adjust storage size to match your actual source library size.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: spacesaver-source
+  namespace: kube-idle
+  labels:
+    app: spacesaver
+spec:
+  accessModes:
+    - ReadOnlyMany
+  storageClassName: nfs   # <-- CHANGE to your storage class
+  resources:
+    requests:
+      storage: 1Ti         # <-- CHANGE to your source library size

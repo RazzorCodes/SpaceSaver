@@ -1,0 +1,42 @@
+# PVC placeholder for the encode working directory.
+#
+# PURPOSE:
+#   The transcoder writes in-progress encode output to /workdir/<uuid>.mkv
+#   before moving the file to /dest on success. This avoids partial files
+#   ever appearing in the final library.
+#
+# STORAGE REQUIREMENTS:
+#   - Must hold at least ONE full output file at a time (one encode runs at a time).
+#   - For 4K (2160p) UHD content, a single output file can be up to ~80 GB.
+#   - For 1080p TV content, budget ~20 GB per file.
+#   - Fast local NVMe or SSD storage is strongly preferred to avoid the encode
+#     being I/O-bound on the write side.
+#   - NFS workdir will work, but may reduce encode throughput.
+#
+# HOW TO USE:
+#   By default, the deployment uses an emptyDir volume for /workdir (ephemeral,
+#   backed by the node's local disk). This is the simplest option for most
+#   single-node clusters.
+#
+#   If you want to use a dedicated PVC instead (e.g., for a multi-node cluster
+#   or to guarantee storage class placement):
+#     1. Apply this manifest (after editing storageClassName and size).
+#     2. In deployment.yaml, replace the emptyDir volume with a PVC reference
+#        to this PVC (see the comment in deployment.yaml).
+#
+# NOTE: This manifest is intentionally NOT applied by default. Do not apply
+# it unless you intend to use a PVC for workdir.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: spacesaver-workdir
+  namespace: kube-idle
+  labels:
+    app: spacesaver
+spec:
+  accessModes:
+    - ReadWriteOnce   # Single-node only; fine since we run one replica
+  storageClassName: local-path   # <-- CHANGE: use fast local storage (NVMe)
+  resources:
+    requests:
+      storage: 100Gi              # <-- CHANGE: at least 80 Gi for 4K content

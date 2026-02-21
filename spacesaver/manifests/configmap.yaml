@@ -1,0 +1,23 @@
+# Default quality and operational settings for SpaceSaver.
+# These values are injected as environment variables into the pod via envFrom.
+# All settings can also be updated at runtime via POST /config/quality —
+# the live change takes effect immediately without a pod restart.
+#
+# TV_CRF / MOVIE_CRF: libx265 Constant Rate Factor.
+#   Lower = better quality, larger file. Range 0-51. Visually lossless ≈ 18-20.
+# TV_RES_CAP / MOVIE_RES_CAP: Maximum output height in pixels (e.g. 1080 = 1080p).
+#   Set to 0 to disable downscaling (encode at source resolution).
+# RESCAN_INTERVAL: Seconds between source library scans. Default 600 = 10 minutes.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: spacesaver-config
+  namespace: kube-idle
+  labels:
+    app: spacesaver
+data:
+  TV_CRF: "18"
+  MOVIE_CRF: "16"
+  TV_RES_CAP: "1080"
+  MOVIE_RES_CAP: "2160"
+  RESCAN_INTERVAL: "600"

@@ -1,0 +1,24 @@
+# syntax=docker/dockerfile:1
+FROM python:3.12-slim
+
+# Install ffmpeg (includes ffprobe) from Debian repos
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ffmpeg && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Install Python dependencies first (layer-cached)
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application source
+COPY *.py .
+
+# Expose the HTTP API port
+EXPOSE 8000
+
+# Run the Flask application (threaded mode — Flask handles the two background
+# threads and API requests concurrently within the same process)
+CMD ["python", "app.py"]
