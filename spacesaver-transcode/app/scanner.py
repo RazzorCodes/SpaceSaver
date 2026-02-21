@@ -31,6 +31,7 @@ FLAT_FILE = os.path.join(DEST_DIR, ".spacesaver-transcode")
 MEDIA_EXTENSIONS = {".mkv", ".mp4", ".avi", ".mov", ".m4v", ".ts", ".wmv"}
 
 _stop_event = threading.Event()
+_rescan_event = threading.Event()  # set to wake scanner before next interval
 
 
 def _load_flat_file() -> Set[str]:
@@ -117,7 +118,9 @@ def run() -> None:
             _scan_once()
         except Exception as exc:  # noqa: BLE001
             log.exception("Scan error: %s", exc)
-        _stop_event.wait(cfg.rescan_interval)
+        # Wait for stop, an explicit rescan trigger, or the regular interval
+        _rescan_event.wait(timeout=cfg.rescan_interval)
+        _rescan_event.clear()
     log.info("Scanner stopped.")
 
 
@@ -125,6 +128,11 @@ def start() -> threading.Thread:
     t = threading.Thread(target=run, name="scanner", daemon=True)
     t.start()
     return t
+
+
+def trigger_rescan() -> None:
+    """Wake the scanner immediately without waiting for the next interval."""
+    _rescan_event.set()
 
 
 def stop() -> None:

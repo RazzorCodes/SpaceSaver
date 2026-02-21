@@ -31,6 +31,7 @@ echo " Version: $NEW_VERSION"
 echo "==================================="
 
 podman build \
+    --build-arg CACHE_BUST="$(date +%s)" \
     -t "spacesaver-transcode:${NEW_VERSION}" \
     -t "spacesaver-transcode:latest" \
     -f containerfile/spacesaver-transcode \

@@ -46,6 +46,24 @@ _LOSSLESS_CODECS = {
     "truehd", "mlp", "flac",
 }
 
+# Source video codecs that are already HEVC — re-encoding would lose quality
+_HEVC_CODECS = {"hevc", "h265"}
+
+# Conservative CRF → max expected bitrate (kbps) at 1080p for libx265.
+# If the source is already *below* this threshold (normalised to 1080p)
+# the encode would produce a larger or identical file — skip it.
+_CRF_BITRATE_TABLE = {
+    16: 8000,
+    18: 5500,
+    20: 3800,
+    22: 2500,
+    24: 1700,
+    26: 1200,
+    28:  800,
+}
+_CRF_BITRATE_DEFAULT = 5500  # fallback for CRF values not in the table
+_PIXELS_1080P = 1920 * 1080
+
 _stop_event = threading.Event()
 _current_file: Optional[MediaFile] = None
 _current_lock = threading.Lock()
@@ -135,6 +153,60 @@ def _effective_res_cap(mf: MediaFile) -> int:
     return mf.movie_res_cap if mf.movie_res_cap is not None else cfg.movie_res_cap
 
 
+def _crf_bitrate_threshold(crf: int) -> int:
+    """Return the 1080p bitrate ceiling (kbps) for a given CRF value."""
+    if crf in _CRF_BITRATE_TABLE:
+        return _CRF_BITRATE_TABLE[crf]
+    # Linear interpolation between the two nearest table entries
+    lower = max((k for k in _CRF_BITRATE_TABLE if k <= crf), default=None)
+    upper = min((k for k in _CRF_BITRATE_TABLE if k >= crf), default=None)
+    if lower is None:
+        return _CRF_BITRATE_TABLE[min(_CRF_BITRATE_TABLE)]
+    if upper is None:
+        return _CRF_BITRATE_TABLE[max(_CRF_BITRATE_TABLE)]
+    lo_bps, hi_bps = _CRF_BITRATE_TABLE[lower], _CRF_BITRATE_TABLE[upper]
+    ratio = (crf - lower) / (upper - lower)
+    return int(lo_bps + ratio * (hi_bps - lo_bps))
+
+
+def _should_skip(mf: MediaFile, streams: list, probe: dict) -> tuple[bool, str]:
+    """
+    Decide whether encoding this file would be wasteful.
+
+    Returns (skip: bool, reason: str).
+    """
+    video_streams = [s for s in streams if s.get("codec_type") == "video"]
+
+    # 1. Source is already HEVC — re-encoding is guaranteed quality loss.
+    for vs in video_streams:
+        codec = vs.get("codec_name", "").lower()
+        if codec in _HEVC_CODECS:
+            return True, "source is already HEVC/H.265"
+
+    # 2. Source bitrate already below what the configured CRF would produce.
+    try:
+        source_kbps = int(probe.get("format", {}).get("bit_rate", 0)) // 1000
+    except (TypeError, ValueError):
+        source_kbps = 0
+
+    if source_kbps > 0:
+        # Normalise bitrate to 1080p-equivalent using the largest video stream
+        max_pixels = max(
+            (vs.get("width", 1920) * vs.get("height", 1080) for vs in video_streams),
+            default=_PIXELS_1080P,
+        )
+        normalised_kbps = int(source_kbps * _PIXELS_1080P / max(max_pixels, 1))
+        threshold = _crf_bitrate_threshold(_effective_crf(mf))
+        if normalised_kbps < threshold:
+            return (
+                True,
+                f"source bitrate {source_kbps} kbps (≈{normalised_kbps} kbps @1080p) "
+                f"already below CRF {_effective_crf(mf)} threshold {threshold} kbps",
+            )
+
+    return False, ""
+
+
 def _build_cmd(mf: MediaFile, tmp_path: str, streams: list) -> list:
     """
     Build the ffmpeg CLI command as a list of arguments.
@@ -203,12 +275,9 @@ def _build_cmd(mf: MediaFile, tmp_path: str, streams: list) -> list:
     return cmd
 
 
-def _encode(mf: MediaFile) -> None:
+def _encode(mf: MediaFile, streams: list) -> None:
     """Run ffmpeg as a subprocess, updating progress in the DB from stdout."""
     tmp_path = os.path.join(WORKDIR, f"{mf.uuid}.mkv")
-    streams = _probe_streams(mf.source_path)
-    if not streams:
-        raise RuntimeError("ffprobe returned no streams")
 
     # Estimate total frames for progress calculation
     video_streams = [s for s in streams if s.get("codec_type") == "video"]
@@ -254,7 +323,7 @@ def _encode(mf: MediaFile) -> None:
             except ValueError:
                 pass
             if total_frames > 0:
-                progress = min(99.0, (frames_done / total_frames) * 100)
+                progress = min(99.0, (frames_done * 100.0) / total_frames)
             else:
                 progress = 50.0  # unknown total — show as indeterminate
             db.update_progress(mf.uuid, progress)
@@ -271,6 +340,30 @@ def _process_file(mf: MediaFile) -> None:
     tmp_path = os.path.join(WORKDIR, f"{mf.uuid}.mkv")
     dest_dir = os.path.dirname(mf.dest_path)
 
+    # ── Pre-flight: probe streams and decide whether to skip ────────────────
+    streams = _probe_streams(mf.source_path)
+    if not streams:
+        db.update_error(mf.uuid, "ffprobe returned no streams")
+        return
+
+    try:
+        probe = ffmpeg.probe(mf.source_path)
+    except ffmpeg.Error as exc:
+        db.update_error(mf.uuid, f"ffprobe failed: {exc}")
+        return
+
+    skip, reason = _should_skip(mf, streams, probe)
+    if skip:
+        db.update_status(mf.uuid, FileStatus.ALREADY_OPTIMAL, 100.0)
+        log.info(
+            "Skipping %s (%s): %s",
+            mf.clean_title,
+            mf.year_or_episode,
+            reason,
+        )
+        return
+
+    # ── Encode ───────────────────────────────────────────────────────────────
     db.update_status(mf.uuid, FileStatus.IN_PROGRESS, 0.0)
     mf.status = FileStatus.IN_PROGRESS
     _write_progress_json(mf)
@@ -278,7 +371,7 @@ def _process_file(mf: MediaFile) -> None:
     log.info("Encoding: %s → %s", mf.source_path, mf.dest_path)
 
     try:
-        _encode(mf)
+        _encode(mf, streams=streams)
 
         # Move to final destination
         os.makedirs(dest_dir, exist_ok=True)
@@ -288,6 +381,13 @@ def _process_file(mf: MediaFile) -> None:
         _append_flat_file(mf.file_hash)
         _remove_progress_json(mf.uuid)
         log.info("Done: %s", mf.dest_path)
+
+        # Delete original source to reclaim space
+        try:
+            os.remove(mf.source_path)
+            log.info("Deleted source file: %s", mf.source_path)
+        except OSError as exc:
+            log.warning("Could not delete source file %s: %s", mf.source_path, exc)
 
     except Exception as exc:  # noqa: BLE001
         _cleanup_workdir(mf.uuid)

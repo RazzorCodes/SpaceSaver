@@ -21,6 +21,7 @@ class FileStatus(str, Enum):
     DONE = "done"
     ERROR = "error"
     SKIPPED = "skipped"
+    ALREADY_OPTIMAL = "already_optimal"
 
 
 @dataclass

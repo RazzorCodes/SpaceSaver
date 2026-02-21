@@ -129,6 +129,7 @@ def status():
             "done": done,
             "error": error,
             "skipped": skipped,
+            "already_optimal": counts.get(FileStatus.ALREADY_OPTIMAL.value, 0),
             "current_file": current_info,
             "eta_seconds": eta_seconds,
         }
@@ -146,7 +147,13 @@ def get_quality():
 def set_quality():
     data = request.get_json(silent=True) or {}
     cfg.update(data)
-    return jsonify({"ok": True, "config": cfg.to_dict()})
+    reset_count = db.reset_already_optimal()
+    scanner.trigger_rescan()
+    log.info(
+        "Quality config updated. %d already-optimal file(s) requeued; rescan triggered.",
+        reset_count,
+    )
+    return jsonify({"ok": True, "config": cfg.to_dict(), "requeued": reset_count})
 
 
 @app.post("/config/quality/<uuid>")
@@ -160,10 +167,13 @@ def set_quality_for_file(uuid: str):
     overrides = {k: v for k, v in data.items() if k in allowed}
     db.update_quality_override(uuid, overrides)
 
-    # Requeue if already DONE so it gets re-encoded
+    # Requeue if DONE or ALREADY_OPTIMAL so it gets re-evaluated / re-encoded
     if mf.status == FileStatus.DONE:
         db.update_status(uuid, FileStatus.PENDING, 0.0)
         log.info("Requeued %s for re-encode with new quality settings", uuid)
+    elif mf.status == FileStatus.ALREADY_OPTIMAL:
+        db.reset_already_optimal(uuid)
+        log.info("Requeued already-optimal file %s for re-evaluation", uuid)
 
     return jsonify({"ok": True})
 

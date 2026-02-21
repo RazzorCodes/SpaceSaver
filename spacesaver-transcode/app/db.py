@@ -226,6 +226,32 @@ def count_by_status() -> dict:
     return {row["status"]: row["cnt"] for row in rows}
 
 
+def reset_already_optimal(uuid: Optional[str] = None) -> int:
+    """
+    Revert ALREADY_OPTIMAL files back to PENDING so they get re-evaluated
+    against the current quality settings.
+
+    If uuid is given, only that file is affected.
+    Returns the number of rows updated.
+    """
+    with _lock, _connect() as conn:
+        if uuid is not None:
+            cur = conn.execute(
+                "UPDATE files SET status = ?, progress = 0.0 WHERE uuid = ? AND status = ?",
+                (FileStatus.PENDING.value, uuid, FileStatus.ALREADY_OPTIMAL.value),
+            )
+        else:
+            cur = conn.execute(
+                "UPDATE files SET status = ?, progress = 0.0 WHERE status = ?",
+                (FileStatus.PENDING.value, FileStatus.ALREADY_OPTIMAL.value),
+            )
+        conn.commit()
+    count = cur.rowcount
+    if count:
+        log.info("Reset %d already-optimal file(s) to pending for re-evaluation", count)
+    return count
+
+
 def reset_in_progress() -> int:
     """On startup, reset any IN_PROGRESS files back to PENDING."""
     with _lock, _connect() as conn:
