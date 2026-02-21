@@ -16,25 +16,26 @@ resources:
 # Override the registry / tag without editing deployment.yaml directly.
 # In an overlay: set `newName` and `newTag` under images[].
 images:
-  - name: your-registry/spacesaver
-    newName: your-registry/spacesaver   # <-- CHANGE to your registry path
-    newTag: latest                      # <-- CHANGE to the image tag you want
+  - name: your-registry/spacesaver            # must match image: in deployment.yaml
+    newName: homelab-master-01:5000/spacesaver  # <-- CHANGE to match REGISTRY_HOST in deploy.sh
+    newTag: latest                              # deploy.sh always pushes :latest too
 
 # ── StorageClass patches ──────────────────────────────────────────────────────
-# These strategic-merge patches set storageClassName on every PVC.
-# Override them per-overlay to target different storage backends.
+# Uses nfs-storage-slow — the NFS dynamic provisioner already present in the
+# cluster. No static PV is needed; the provisioner creates one automatically.
+# Change both values if you want a different StorageClass.
 patches:
   - patch: |-
       - op: replace
         path: /spec/storageClassName
-        value: nas-slow-volume          # <-- CHANGE to your StorageClass name
+        value: nfs-storage-slow         # <-- CHANGE to your StorageClass name
     target:
       kind: PersistentVolumeClaim
       name: spacesaver-source
   - patch: |-
       - op: replace
         path: /spec/storageClassName
-        value: nas-slow-volume          # <-- CHANGE to your StorageClass name
+        value: nfs-storage-slow         # <-- CHANGE to your StorageClass name
     target:
       kind: PersistentVolumeClaim
       name: spacesaver-dest

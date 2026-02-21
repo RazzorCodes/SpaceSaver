@@ -1,0 +1,71 @@
+# Kaniko build job — builds the spacesaver image in-cluster and pushes it
+# to the local registry. Pinned to the build node (homelab-worker-01).
+#
+# Build context is provided via the `spacesaver-build-ctx` ConfigMap, which
+# deploy.sh creates from the local app/ folder before applying this Job.
+# Do NOT apply this file directly — run ./deploy.sh instead.
+#
+# Variables substituted by deploy.sh via envsubst:
+#   REGISTRY_HOST   — e.g. homelab-master-01:5000
+#   IMAGE_NAME      — e.g. spacesaver
+#   IMAGE_TAG       — e.g. v0.1.4-alpha  (read from app/version.txt)
+#   BUILD_NODE      — hostname of the node to pin the job to
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: spacesaver-build
+  namespace: kube-idle
+  labels:
+    app: spacesaver
+    component: build
+spec:
+  # Auto-delete 10 min after success or failure
+  ttlSecondsAfterFinished: 600
+  backoffLimit: 1
+  template:
+    metadata:
+      labels:
+        app: spacesaver
+        component: build
+    spec:
+      restartPolicy: Never
+
+      # ── Pin to the build node ─────────────────────────────────────────────
+      nodeSelector:
+        kubernetes.io/hostname: ${BUILD_NODE}
+
+      containers:
+        - name: kaniko
+          image: ${REGISTRY_HOST}/kaniko/executor:latest
+          imagePullPolicy: Always
+          args:
+            # Containerfile mounted from ConfigMap key "Dockerfile"
+            - --dockerfile=/workspace/Dockerfile
+            # Context is the same ConfigMap mount — all *.py, requirements, version
+            - --context=dir:///workspace
+            # Push versioned tag and :latest
+            - --destination=${REGISTRY_HOST}/${IMAGE_NAME}:${IMAGE_TAG}
+            - --destination=${REGISTRY_HOST}/${IMAGE_NAME}:latest
+            # Registry is plain HTTP
+            - --insecure
+            # Base image pulled via HTTP proxy on this node
+            - --insecure-pull
+            - --cache=false
+            - --verbosity=info
+          volumeMounts:
+            - name: build-ctx
+              mountPath: /workspace
+
+          resources:
+            requests:
+              cpu: 500m
+              memory: 512Mi
+            limits:
+              cpu: "4"
+              memory: 4Gi
+
+      volumes:
+        # ConfigMap created by deploy.sh from local app/ + Containerfile
+        - name: build-ctx
+          configMap:
+            name: spacesaver-build-ctx
