@@ -3,8 +3,8 @@ transcoder.py — Background thread that encodes PENDING files one at a time.
 
 Responsibilities:
   - Pick next PENDING file from the DB
-  - Build an ffmpeg-python pipeline:
-      - Scale video to resolution cap
+  - Build and run an ffmpeg subprocess:
+      - Scale video to resolution cap (only if source exceeds it)
       - Encode with libx265 at the appropriate CRF
       - Copy existing lossy audio tracks (AAC, AC3, EAC3, DTS, MP3, Opus)
       - Re-encode uncompressed/lossless audio (PCM, TrueHD, FLAC) to
@@ -22,8 +22,8 @@ import json
 import logging
 import os
 import shutil
+import subprocess
 import threading
-import time
 from typing import Optional
 
 import ffmpeg
@@ -40,8 +40,11 @@ FLAT_FILE = os.path.join(DEST_DIR, ".spacesaver-transcode")
 PROGRESS_DIR = "/dest/.transcoder/progress"
 
 # Audio codecs considered lossless / uncompressed → need re-encoding
-_LOSSLESS_CODECS = {"pcm_s16le", "pcm_s24le", "pcm_s32le", "pcm_f32le",
-                    "truehd", "mlp", "flac", "dts-hd ma", "dts ma"}
+_LOSSLESS_CODECS = {
+    "pcm_s16le", "pcm_s24le", "pcm_s32le", "pcm_f32le", "pcm_s16be",
+    "pcm_s24be", "pcm_s32be", "pcm_f64le", "pcm_f64be",
+    "truehd", "mlp", "flac",
+}
 
 _stop_event = threading.Event()
 _current_file: Optional[MediaFile] = None
@@ -107,7 +110,17 @@ def _probe_streams(source_path: str) -> list:
 
 
 def _is_lossless(codec_name: str) -> bool:
-    return codec_name.lower() in _LOSSLESS_CODECS or codec_name.lower().startswith("pcm_")
+    name = codec_name.lower()
+    return name in _LOSSLESS_CODECS or name.startswith("pcm_")
+
+
+def _is_dts_hd(codec_name: str, profile: str) -> bool:
+    """DTS-HD MA and DTS:X are lossless; plain DTS is lossy."""
+    name = codec_name.lower()
+    prof = (profile or "").lower()
+    if name != "dts":
+        return False
+    return "ma" in prof or "hd" in prof or "x" in prof
 
 
 def _effective_crf(mf: MediaFile) -> int:
@@ -122,148 +135,136 @@ def _effective_res_cap(mf: MediaFile) -> int:
     return mf.movie_res_cap if mf.movie_res_cap is not None else cfg.movie_res_cap
 
 
-def _build_ffmpeg(mf: MediaFile, tmp_path: str, streams: list) -> ffmpeg.nodes.OutputStream:
-    """Construct the ffmpeg-python output stream."""
+def _build_cmd(mf: MediaFile, tmp_path: str, streams: list) -> list:
+    """
+    Build the ffmpeg CLI command as a list of arguments.
+
+    Uses -map to explicitly select streams rather than the ffmpeg-python node
+    graph, which is error-prone when combining filtered and unfiltered streams.
+    """
     crf = _effective_crf(mf)
     res_cap = _effective_res_cap(mf)
 
-    video_streams = [s for s in streams if s.get("codec_type") == "video"]
     audio_streams = [s for s in streams if s.get("codec_type") == "audio"]
-    subtitle_streams = [s for s in streams if s.get("codec_type") == "subtitle"]
+    video_streams = [s for s in streams if s.get("codec_type") == "video"]
 
-    inp = ffmpeg.input(mf.source_path)
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", mf.source_path,
+        # Map all streams explicitly
+        "-map", "0:v",    # all video tracks
+        "-map", "0:a",    # all audio tracks
+        "-map", "0:s?",   # all subtitle tracks (? = don't fail if none)
+        # Video: libx265
+        "-c:v", "libx265",
+        "-crf", str(crf),
+        "-preset", "slow",
+        "-x265-params", "log-level=error",
+    ]
 
-    output_streams = []
+    # Video scaling: only downscale if source height exceeds cap
+    max_height = max((s.get("height", 0) for s in video_streams), default=0)
+    if res_cap > 0 and max_height > res_cap:
+        # scale=-2:H → ffmpeg computes width to maintain AR, rounded to even
+        cmd += ["-vf", f"scale=-2:{res_cap}"]
 
-    # --- Video ---
-    for i, vs in enumerate(video_streams):
-        width = vs.get("width", 0)
-        height = vs.get("height", 0)
-        vstream = inp[f"v:{i}"]
-        if height > res_cap and res_cap > 0:
-            # Scale to res_cap, preserving aspect ratio, force even dimensions
-            vstream = vstream.filter("scale", -2, res_cap)
-        vstream = vstream.video.filter(
-            "scale",
-            w="trunc(iw/2)*2",
-            h="trunc(ih/2)*2",
-        )
-        output_streams.append(vstream)
-
-    # --- Audio ---
-    audio_output_codecs = []
-    for i, ast in enumerate(audio_streams):
-        codec = ast.get("codec_name", "").lower()
-        channels = ast.get("channels", 2)
-        astream = inp[f"a:{i}"]
-        if _is_lossless(codec):
-            if channels >= 3:
-                enc = "aac"
-                opts = {"b:a": "640k"}
-            else:
-                enc = "libopus"
-                opts = {"b:a": "192k"}
-            audio_output_codecs.append((astream, enc, opts))
-        else:
-            audio_output_codecs.append((astream, "copy", {}))
-        output_streams.append(astream)
-
-    # --- Subtitles ---
-    for i, _ in enumerate(subtitle_streams):
-        output_streams.append(inp[f"s:{i}"])
-
-    # Build codec arguments
-    codec_args: dict = {
-        "vcodec": "libx265",
-        "crf": crf,
-        "preset": "slow",
-        "x265-params": "log-level=error",
-        "acodec": "copy",  # default
-        "scodec": "copy",
-    }
-
-    # Per-stream audio codec overrides
-    for idx, (_, enc, opts) in enumerate(audio_output_codecs):
-        if enc != "copy":
-            codec_args[f"codec:a:{idx}"] = enc
-            for k, v in opts.items():
-                codec_args[f"{k}:{idx}"] = v
-
-    out = ffmpeg.output(
-        *output_streams,
-        tmp_path,
-        **codec_args,
-        format="matroska",
+    # Audio: per-stream codec selection
+    any_lossless = any(
+        _is_lossless(s.get("codec_name", "")) or
+        _is_dts_hd(s.get("codec_name", ""), s.get("profile", ""))
+        for s in audio_streams
     )
-    return out.overwrite_output()
+
+    if not any_lossless:
+        # All lossy — bulk copy is safe and simpler
+        cmd += ["-c:a", "copy"]
+    else:
+        for i, ast in enumerate(audio_streams):
+            codec = ast.get("codec_name", "")
+            profile = ast.get("profile", "")
+            channels = ast.get("channels", 2)
+            if _is_lossless(codec) or _is_dts_hd(codec, profile):
+                if channels >= 3:
+                    cmd += [f"-c:a:{i}", "aac", f"-b:a:{i}", "640k"]
+                else:
+                    cmd += [f"-c:a:{i}", "libopus", f"-b:a:{i}", "192k"]
+            else:
+                cmd += [f"-c:a:{i}", "copy"]
+
+    # Subtitles: always copy
+    cmd += ["-c:s", "copy"]
+
+    # Progress reporting to stdout (parsed by _encode)
+    cmd += ["-progress", "pipe:1", "-nostats"]
+
+    # Output format and path
+    cmd += ["-f", "matroska", tmp_path]
+
+    return cmd
 
 
-def _progress_callback(uuid: str, total_frames: int):
-    """Returns a callable that ffmpeg reports progress to (via stderr parse)."""
-    # ffmpeg-python doesn't have a native progress hook; we use the
-    # stats_period pattern via ffmpeg's own -progress pipe.
-    # Progress is updated by _encode() based on elapsed time heuristics instead.
-    pass
-
-
-def _encode(mf: MediaFile) -> bool:
-    """
-    Actually run ffmpeg. Returns True on success.
-    Progress is estimated from ffmpeg's stderr frame counter.
-    """
+def _encode(mf: MediaFile) -> None:
+    """Run ffmpeg as a subprocess, updating progress in the DB from stdout."""
     tmp_path = os.path.join(WORKDIR, f"{mf.uuid}.mkv")
     streams = _probe_streams(mf.source_path)
     if not streams:
         raise RuntimeError("ffprobe returned no streams")
 
-    # Estimate total frames for progress
+    # Estimate total frames for progress calculation
     video_streams = [s for s in streams if s.get("codec_type") == "video"]
     total_frames = 0
     for vs in video_streams:
         fps_str = vs.get("r_frame_rate", "25/1")
         try:
             num, den = fps_str.split("/")
-            fps = float(num) / float(den)
+            fps = float(num) / float(den) if float(den) else 25.0
         except Exception:  # noqa: BLE001
             fps = 25.0
-        duration = float(vs.get("duration", 0) or 0)
-        if duration <= 0:
-            # Try container duration
+        duration = 0.0
+        try:
+            duration = float(vs.get("duration") or 0)
+        except (TypeError, ValueError):
             pass
         total_frames += int(fps * duration)
 
-    out_stream = _build_ffmpeg(mf, tmp_path, streams)
+    # Also try container duration as fallback
+    if total_frames == 0:
+        try:
+            probe = ffmpeg.probe(mf.source_path)
+            dur = float(probe.get("format", {}).get("duration", 0) or 0)
+            total_frames = int(dur * 25)  # rough estimate
+        except Exception:  # noqa: BLE001
+            pass
 
-    # Run with progress tracking via ffmpeg -progress pipe
-    process = (
-        out_stream
-        .global_args("-progress", "pipe:1", "-nostats")
-        .run_async(pipe_stdout=True, pipe_stderr=True)
+    cmd = _build_cmd(mf, tmp_path, streams)
+    log.debug("ffmpeg cmd: %s", " ".join(cmd))
+
+    process = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
     )
 
     frames_done = 0
-    while True:
-        line = process.stdout.readline()
-        if not line:
-            break
-        line = line.decode("utf-8", errors="ignore").strip()
+    for raw_line in process.stdout:
+        line = raw_line.decode("utf-8", errors="ignore").strip()
         if line.startswith("frame="):
             try:
-                frames_done = int(line.split("=")[1])
+                frames_done = int(line.split("=", 1)[1])
             except ValueError:
                 pass
             if total_frames > 0:
                 progress = min(99.0, (frames_done / total_frames) * 100)
             else:
-                progress = 50.0  # unknown total
+                progress = 50.0  # unknown total — show as indeterminate
             db.update_progress(mf.uuid, progress)
 
     process.wait()
     if process.returncode != 0:
         stderr_out = process.stderr.read().decode("utf-8", errors="ignore")
-        raise RuntimeError(f"ffmpeg exited {process.returncode}: {stderr_out[-500:]}")
-
-    return True
+        raise RuntimeError(
+            f"ffmpeg exited {process.returncode}: {stderr_out[-600:]}"
+        )
 
 
 def _process_file(mf: MediaFile) -> None:
@@ -291,16 +292,15 @@ def _process_file(mf: MediaFile) -> None:
     except Exception as exc:  # noqa: BLE001
         _cleanup_workdir(mf.uuid)
         error_msg = str(exc)
-        # Check retry count
         fresh = db.get_by_uuid(mf.uuid)
-        error_count = (fresh.error_count if fresh else 0)
+        error_count = fresh.error_count if fresh else 0
         if error_count < 1:
-            # First failure — update error count, requeue as PENDING
+            # First failure — bump error count, requeue
             db.update_error(mf.uuid, error_msg)
             db.update_status(mf.uuid, FileStatus.PENDING, 0.0)
             log.warning("Encode failed (will retry once): %s — %s", mf.clean_title, error_msg)
         else:
-            # Second failure — mark as ERROR permanently
+            # Second failure — permanent error
             db.update_error(mf.uuid, error_msg)
             log.error("Encode failed permanently: %s — %s", mf.clean_title, error_msg)
 
@@ -320,7 +320,6 @@ def _on_startup_cleanup() -> None:
                 os.remove(path)
     except OSError:
         pass
-    # Reset any IN_PROGRESS rows
     db.reset_in_progress()
 
 
