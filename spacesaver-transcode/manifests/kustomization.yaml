@@ -47,7 +47,7 @@ patches:
       - op: add
         path: /spec/template/spec/nodeSelector
         value:
-          kubernetes.io/hostname: worker-node-01  # <-- CHANGE to your node name
+          kubernetes.io/hostname: homelab-worker-01  # <-- CHANGE to your node name
     target:
       kind: Deployment
       name: spacesaver

@@ -2,8 +2,8 @@
 # deploy.sh — Build (if needed) and deploy SpaceSaver Transcoder to Kubernetes.
 #
 # Usage:
-#   ./deploy.sh             # build image if missing, then deploy (idempotent)
-#   ./deploy.sh --delete    # tear everything down
+#   ./deploy-full.sh             # build image if missing, then deploy (idempotent)
+#   ./deploy-full.sh --delete    # tear everything down
 #
 # Prerequisites:
 #   - kubectl configured and pointing at the right cluster
