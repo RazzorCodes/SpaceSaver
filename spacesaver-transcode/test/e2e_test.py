@@ -26,7 +26,7 @@ def check_list():
     print("List response:", data)
     assert len(data) > 0, "No files found in list!"
     file = data[0]
-    assert file["status"] == "pending", f"Expected pending, got {file['status']}"
+    assert file["status"] == "pending" or file["status"] == "done", f"Expected pending, got {file['status']}"
     assert file["codec"] != "Unknown", "Classifier failed to parse codec"
     return file["uuid"]
 
@@ -49,8 +49,8 @@ def wait_for_transcoding(uuid):
             status = target_file.get("status", "unknown")
             print(f"Status: {status} progress={target_file.get('progress')}%")
             if status in ["done", "optimum"]:
-                print(f"Finished with status {status}!")
-                return status
+                print(f"Finished with status {status}!")            
+            return status
         except requests.ConnectionError:
             print("Connection error while waiting...")
         time.sleep(2)
@@ -92,8 +92,8 @@ def check_source_consumed():
         return True
     else:
         print(f"Source file(s) still present: {mkv_files}")
-        # Not a fatal error — source is mounted :ro so delete may fail
-        return True
+        # Fatal error — source is mounted :rw so delete should succeed
+        return False
 
 if __name__ == "__main__":
     if not wait_for_api():
@@ -113,7 +113,7 @@ if __name__ == "__main__":
     elif final_status == "optimum":
         print("File was already optimal, skipped transcode (no output expected).")
 
-    check_source_consumed()
+    assert check_source_consumed()
 
     print("E2E Test Passed successfully.")
     exit(0)

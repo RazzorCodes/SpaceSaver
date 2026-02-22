@@ -1,33 +1,65 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ── Read current version ──────────────────────────────────────────────────────
+# ── Defaults ──────────────────────────────────────────────────────────────────
 VERSION_FILE="app/version.txt"
-CURRENT=$(cat "$VERSION_FILE" | tr -d '[:space:]')
+REGISTRY="zot.lan:5000"
+NEW_VERSION=""
 
-# Parse vMAJOR.MINOR.PATCH[-SUFFIX]
-# e.g. v0.0.0-alpha  →  MAJOR=0 MINOR=0 PATCH=0 SUFFIX=alpha
-SEMVER=$(echo "$CURRENT" | grep -oP '\d+\.\d+\.\d+')
-SUFFIX=$(echo "$CURRENT" | grep -oP '(?<=-)\w+' || true)
-MAJOR=$(echo "$SEMVER" | cut -d. -f1)
-MINOR=$(echo "$SEMVER" | cut -d. -f2)
-PATCH=$(echo "$SEMVER" | cut -d. -f3)
+# ── Parse Arguments ───────────────────────────────────────────────────────────
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    -ver|--version)
+      NEW_VERSION="$2"
+      shift 2
+      ;;
+    -r|--registry)
+      REGISTRY="$2"
+      shift 2
+      ;;
+    *)
+      echo "Unknown argument: $1"
+      exit 1
+      ;;
+  esac
+done
 
-# Increment patch
-PATCH=$((PATCH + 1))
+# ── Determine version ─────────────────────────────────────────────────────────
+if [ -z "$NEW_VERSION" ]; then
+    # Read current version and auto-increment
+    CURRENT=$(cat "$VERSION_FILE" | tr -d '[:space:]')
 
-if [ -n "$SUFFIX" ]; then
-    NEW_VERSION="v${MAJOR}.${MINOR}.${PATCH}-${SUFFIX}"
+    # Parse vMAJOR.MINOR.PATCH[-SUFFIX]
+    # e.g. v0.0.0-alpha  →  MAJOR=0 MINOR=0 PATCH=0 SUFFIX=alpha
+    SEMVER=$(echo "$CURRENT" | grep -oP '\d+\.\d+\.\d+')
+    SUFFIX=$(echo "$CURRENT" | grep -oP '(?<=-)\w+' || true)
+    MAJOR=$(echo "$SEMVER" | cut -d. -f1)
+    MINOR=$(echo "$SEMVER" | cut -d. -f2)
+    PATCH=$(echo "$SEMVER" | cut -d. -f3)
+
+    # Increment patch
+    PATCH=$((PATCH + 1))
+
+    if [ -n "$SUFFIX" ]; then
+        NEW_VERSION="v${MAJOR}.${MINOR}.${PATCH}-${SUFFIX}"
+    else
+        NEW_VERSION="v${MAJOR}.${MINOR}.${PATCH}"
+    fi
+
+    echo "$NEW_VERSION" > "$VERSION_FILE"
 else
-    NEW_VERSION="v${MAJOR}.${MINOR}.${PATCH}"
+    echo "Using manual version: $NEW_VERSION"
+    # Optional: Update version file anyway? The request says "use string as version instead", 
+    # but "do not autoincrement". It doesn't explicitly say whether to update version.txt.
+    # Usually, it's good to keep it in sync.
+    echo "$NEW_VERSION" > "$VERSION_FILE"
 fi
-
-echo "$NEW_VERSION" > "$VERSION_FILE"
 
 # ── Build ─────────────────────────────────────────────────────────────────────
 echo "==================================="
 echo " Building - Spacesaver (Transcode)"
-echo " Version: $NEW_VERSION"
+echo " Version:  $NEW_VERSION"
+echo " Registry: $REGISTRY"
 echo "==================================="
 
 podman build \
@@ -40,7 +72,6 @@ podman build \
 echo "Done: spacesaver-transcode:${NEW_VERSION} (also tagged :latest)"
 
 # ── Upload ────────────────────────────────────────────────────────────────────
-REGISTRY="192.168.0.127:5000"
 IMAGE="spacesaver-transcode"
 
 echo "==> Uploading versioned image..."

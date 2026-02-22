@@ -38,7 +38,7 @@ function do_up() {
     # Create an ephemeral copy so the original test-data is never touched
     E2E_SOURCE=$(mktemp -d --tmpdir spacesaver-e2e-source.XXXXXX)
     echo "Ephemeral source dir: $E2E_SOURCE"
-    cp "$TEST_DATA_DIR"/*.mkv "$E2E_SOURCE/"
+    cp "$TEST_DATA_DIR/$TEST_VIDEO_NAME" "$E2E_SOURCE/"
 
     # Symlink so ompose finds ./source
     ln -sfn "$E2E_SOURCE" source
@@ -128,38 +128,28 @@ function do_test() {
     local mode="${1:---all}"
 
     case "$mode" in
-        --all|-w)
+        all|w)
             # Run whitebox first, then E2E (if --all)
             run_whitebox
             WB_EXIT=$?
             if [ $WB_EXIT -ne 0 ]; then
-                echo "=== Whitebox tests failed! Skipping E2E. ==="
+                echo "=== Whitebox tests failed! Skipping  ==="
                 exit $WB_EXIT
             fi
-
-            if [ "$mode" = "--all" ]; then
-                run_e2e
-                E2E_EXIT=$?
-                if [ $E2E_EXIT -eq 0 ]; then
-                    echo "=== All tests passed successfully! ==="
-                fi
-                exit $E2E_EXIT
-            else
                 echo "=== Whitebox tests passed successfully! ==="
-                exit 0
-            fi
             ;;
-        -e2e)
+        all|e2e)
             run_e2e
             E2E_EXIT=$?
-            if [ $E2E_EXIT -eq 0 ]; then
-                echo "=== E2E tests passed successfully! ==="
+            if [ $E2E_EXIT -ne 0 ]; then
+                echo "=== E2E tests failed! ==="
+                exit $E2E_EXIT
             fi
-            exit $E2E_EXIT
+            echo "=== E2E tests passed successfully! ==="
             ;;
         *)
             echo "Invalid test mode: $mode"
-            echo "Usage: $0 --test [--all | -w | -e2e]"
+            echo "Usage: $0 --test [all | w | e2e]"
             exit 1
             ;;
     esac
