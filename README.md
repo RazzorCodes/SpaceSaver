@@ -55,10 +55,22 @@ Use the provided scripts to build and upload the container image to your local r
 ./spacesaver-transcode/upload-container.sh
 ```
 
-### Deploy
+### Deploy to Kubernetes
 Deploy to Kubernetes using the `deploy-full.sh` script:
 ```bash
 ./spacesaver-transcode/deploy-full.sh
+```
+
+### Container Deployment (Docker / Podman Compose)
+SpaceSaver can also be deployed as a pure container without Kubernetes. A sample `docker-compose.yml` is provided in the `spacesaver-transcode/test` directory.
+
+To run with Compose:
+1. Ensure `ffmpeg` is available in your container environment (the build process handles this).
+2. Configure your volumes to point to your media library.
+3. Run the following:
+```bash
+cd spacesaver-transcode/test
+podman-compose up -d  # or docker-compose up -d
 ```
 
 ## License

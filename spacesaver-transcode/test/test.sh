@@ -40,7 +40,7 @@ function do_up() {
     echo "Ephemeral source dir: $E2E_SOURCE"
     cp "$TEST_DATA_DIR"/*.mkv "$E2E_SOURCE/"
 
-    # Symlink so docker-compose finds ./source
+    # Symlink so ompose finds ./source
     ln -sfn "$E2E_SOURCE" source
 
     echo "Starting container..."
