@@ -55,27 +55,30 @@ fi
 # ── check_image_exists ────────────────────────────────────────────────────────
 check_image_exists() {
   local tag="$1"
-  echo "==> Checking registry for ${IMAGE_NAME}:${tag}…"
-
   local status
   status=$(curl -sf -o /dev/null -w "%{http_code}" --connect-timeout 5 \
     "http://${REGISTRY_HOST}/v2/${IMAGE_NAME}/manifests/${tag}" || echo "404")
 
-  if [[ "$status" == "200" ]]; then
-    echo "    Image ${IMAGE_NAME}:${tag} found in registry."
-  else
-    echo "ERROR: Image ${IMAGE_NAME}:${tag} not found in registry (HTTP $status)."
-    echo "Please run ./build.sh first to build and upload the image."
-    exit 1
-  fi
+  [[ "$status" == "200" ]]
 }
 
 # ── Deploy ────────────────────────────────────────────────────────────────────
 
-echo "==> Image tag: ${IMAGE_TAG}"
+echo "==> Targeted image: ${IMAGE_NAME}:${IMAGE_TAG}"
 
-# 1. Verify image exists in registry
-check_image_exists "$IMAGE_TAG"
+DEPLOY_TAG=""
+
+if check_image_exists "$IMAGE_TAG"; then
+  echo "    Found versioned image: ${IMAGE_TAG}"
+  DEPLOY_TAG="$IMAGE_TAG"
+elif check_image_exists "latest"; then
+  echo "    WARNING: Version ${IMAGE_TAG} not found. Falling back to 'latest'."
+  DEPLOY_TAG="latest"
+else
+  echo "ERROR: Neither ${IMAGE_TAG} nor 'latest' found in registry."
+  echo "Please run ./build.sh first."
+  exit 1
+fi
 
 # 2. Cluster-scoped: PriorityClass (no namespace)
 echo "==> Applying PriorityClass…"
@@ -86,7 +89,8 @@ echo "==> Ensuring namespace '$NAMESPACE' exists…"
 kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
 
 # 4. Everything else via Kustomize
-echo "==> Applying kustomization…"
+echo "==> Applying kustomization (image tag: ${DEPLOY_TAG})…"
+(cd "$MANIFESTS_DIR" && kustomize edit set image "${REGISTRY_HOST}/${IMAGE_NAME}:${DEPLOY_TAG}")
 kubectl apply -k "$MANIFESTS_DIR"
 
 echo ""
