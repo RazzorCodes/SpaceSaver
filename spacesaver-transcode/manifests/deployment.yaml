@@ -40,8 +40,8 @@ spec:
               cpu: 10m
               memory: 256Mi
             limits:
-              cpu: "8"
-              memory: 8Gi
+              cpu: "6"
+              memory: 6Gi
 
           # ── Volume mounts ──
           volumeMounts:

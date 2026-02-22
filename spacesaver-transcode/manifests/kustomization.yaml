@@ -10,14 +10,6 @@ resources:
   - service.yaml
   - ingress.yaml
 
-# ── Image ────────────────────────────────────────────────────────────────────
-# Override the registry / tag without editing deployment.yaml directly.
-# In an overlay: set `newName` and `newTag` under images[].
-images:
-  - name: 192.168.0.127:5000/spacesaver-transcode
-    newName: 192.168.0.127:5000/spacesaver
-    newTag: latest
-
 # ── Node pinning ──────────────────────────────────────────────────────────────
 # Pins the pod to a specific node by hostname.
 # Change the value to the output of: kubectl get nodes -o name

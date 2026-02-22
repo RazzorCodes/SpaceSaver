@@ -30,7 +30,7 @@ done
 if [[ -z "$SOURCE" || -z "$DEST" ]]; then
   echo "Error: Both --source and --dest are required."
   echo "Usage: $0 --source <source_image> --dest <dest_image>"
-  echo "Example: $0 --source localhost/spacesaver-transcode:latest --dest 192.168.0.127:5000/spacesaver:latest"
+  echo "Example: $0 --source localhost/spacesaver-transcode:latest --dest 192.168.0.127:5000/spacesaver-transcode:latest"
   exit 1
 fi
 

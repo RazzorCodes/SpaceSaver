@@ -38,3 +38,18 @@ podman build \
     app
 
 echo "Done: spacesaver-transcode:${NEW_VERSION} (also tagged :latest)"
+
+# ── Upload ────────────────────────────────────────────────────────────────────
+REGISTRY="192.168.0.127:5000"
+IMAGE="spacesaver-transcode"
+
+echo "==> Uploading versioned image..."
+./upload-container.sh --source "localhost/${IMAGE}:${NEW_VERSION}" --dest "${REGISTRY}/${IMAGE}:${NEW_VERSION}"
+
+echo "==> Uploading latest image..."
+./upload-container.sh --source "localhost/${IMAGE}:latest" --dest "${REGISTRY}/${IMAGE}:latest"
+
+echo "==================================="
+echo " Build & Upload Complete"
+echo " Version: $NEW_VERSION"
+echo "==================================="

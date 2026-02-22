@@ -27,9 +27,11 @@ BUILD_NODE="homelab-worker-01"
 
 # Namespace and image name
 NAMESPACE="kube-idle"
-IMAGE_NAME="spacesaver"
+# Namespace and image name
+NAMESPACE="kube-idle"
+IMAGE_NAME="spacesaver-transcode"
 
-# Version tag: read from app/version.txt (same source as build.sh)
+# Version tag: read from app/version.txt
 IMAGE_TAG=$(cat "$SCRIPT_DIR/app/version.txt" | tr -d '[:space:]')
 
 # ── Parse flags ───────────────────────────────────────────────────────────────
@@ -43,100 +45,27 @@ if $DELETE; then
   echo "==> Deleting namespaced resources (kustomize)…"
   kubectl delete -k "$MANIFESTS_DIR" --ignore-not-found
 
-  echo "==> Deleting build job and context ConfigMap (if still around)…"
-  kubectl delete job spacesaver-build -n "$NAMESPACE" --ignore-not-found
-  kubectl delete configmap spacesaver-build-ctx -n "$NAMESPACE" --ignore-not-found
-
   echo "==> Deleting cluster-scoped resources…"
   kubectl delete -f "$MANIFESTS_DIR/priorityclass.yaml" --ignore-not-found
 
-  echo "==> Done. Namespace '$NAMESPACE' left intact (delete manually if needed)."
+  echo "==> Done. Namespace '$NAMESPACE' left intact."
   exit 0
 fi
 
-# ── build_if_missing ──────────────────────────────────────────────────────────
-build_if_missing() {
+# ── check_image_exists ────────────────────────────────────────────────────────
+check_image_exists() {
   local tag="$1"
-
   echo "==> Checking registry for ${IMAGE_NAME}:${tag}…"
 
-  local existing
-  existing=$(curl -sf --connect-timeout 5 \
-    "http://${REGISTRY_HOST}/v2/${IMAGE_NAME}/tags/list" 2>/dev/null \
-    | grep -o "\"${tag}\"" || true)
+  local status
+  status=$(curl -sf -o /dev/null -w "%{http_code}" --connect-timeout 5 \
+    "http://${REGISTRY_HOST}/v2/${IMAGE_NAME}/manifests/${tag}" || echo "404")
 
-  if [[ -n "$existing" ]]; then
-    echo "    Image ${IMAGE_NAME}:${tag} found in registry — skipping build."
-    return
-  fi
-
-  echo "    Image not found. Packaging build context…"
-
-  # ── Create/update ConfigMap from local files ─────────────────────────────
-  # The ConfigMap becomes the /workspace volume inside the Kaniko pod.
-  # Key "Dockerfile" = the Containerfile; remaining keys are the app sources.
-  kubectl create configmap spacesaver-build-ctx \
-    -n "$NAMESPACE" \
-    --from-file="Dockerfile=$SCRIPT_DIR/containerfile/spacesaver-transcode" \
-    $(for f in "$SCRIPT_DIR/app/"*.py \
-               "$SCRIPT_DIR/app/requirements.txt" \
-               "$SCRIPT_DIR/app/version.txt"; do
-        echo "--from-file=$(basename "$f")=$f"
-      done) \
-    --dry-run=client -o yaml \
-    | kubectl apply -f -
-
-  echo "    Build context uploaded. Launching Kaniko job…"
-
-  # Delete any previous orphaned job
-  kubectl delete job spacesaver-build -n "$NAMESPACE" --ignore-not-found --wait=true
-
-  # Render job template (envsubst) and apply
-  REGISTRY_HOST="$REGISTRY_HOST" \
-  IMAGE_NAME="$IMAGE_NAME" \
-  IMAGE_TAG="$tag" \
-  BUILD_NODE="$BUILD_NODE" \
-    envsubst < "$MANIFESTS_DIR/job-build.yaml" \
-    | kubectl apply -f -
-
-  # ── Wait for the pod to be schedulable / running ────────────────────────
-  echo "==> Waiting for build pod to start…"
-  local build_pod=""
-  for i in $(seq 1 72); do   # 72 × 5s = 6 min max wait for scheduling
-    build_pod=$(kubectl -n "$NAMESPACE" get pods \
-      -l job-name=spacesaver-build \
-      -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
-    if [[ -n "$build_pod" ]]; then
-      local phase
-      phase=$(kubectl -n "$NAMESPACE" get pod "$build_pod" \
-        -o jsonpath='{.status.phase}' 2>/dev/null || true)
-      [[ "$phase" == "Running" || "$phase" == "Succeeded" || "$phase" == "Failed" ]] && break
-    fi
-    echo "    ($i) pod not ready yet — retrying in 5s…"
-    sleep 5
-  done
-
-  if [[ -z "$build_pod" ]]; then
-    echo "ERROR: Build pod never started. Check node/image/configmap."
-    kubectl -n "$NAMESPACE" describe job spacesaver-build || true
-    exit 1
-  fi
-
-  # ── Stream logs live ──────────────────────────────────────────────────────
-  echo "==> Streaming Kaniko build logs (pod: $build_pod)…"
-  echo "────────────────────────────────────────────────────"
-  kubectl -n "$NAMESPACE" logs -f "$build_pod" --all-containers || true
-  echo "────────────────────────────────────────────────────"
-
-  # ── Check final job outcome ───────────────────────────────────────────────
-  if kubectl wait job/spacesaver-build \
-      -n "$NAMESPACE" \
-      --for=condition=complete \
-      --timeout=60s 2>/dev/null; then
-    echo "==> Build succeeded: ${REGISTRY_HOST}/${IMAGE_NAME}:${tag}"
+  if [[ "$status" == "200" ]]; then
+    echo "    Image ${IMAGE_NAME}:${tag} found in registry."
   else
-    echo "ERROR: Build job failed. Last 50 lines:"
-    kubectl -n "$NAMESPACE" logs "$build_pod" --all-containers --tail=50 || true
+    echo "ERROR: Image ${IMAGE_NAME}:${tag} not found in registry (HTTP $status)."
+    echo "Please run ./build.sh first to build and upload the image."
     exit 1
   fi
 }
@@ -145,8 +74,8 @@ build_if_missing() {
 
 echo "==> Image tag: ${IMAGE_TAG}"
 
-# 1. Build image if not already in registry
-build_if_missing "$IMAGE_TAG"
+# 1. Verify image exists in registry
+check_image_exists "$IMAGE_TAG"
 
 # 2. Cluster-scoped: PriorityClass (no namespace)
 echo "==> Applying PriorityClass…"
