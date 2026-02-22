@@ -90,7 +90,6 @@ kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -
 
 # 4. Everything else via Kustomize
 echo "==> Applying kustomization (image tag: ${DEPLOY_TAG})…"
-(cd "$MANIFESTS_DIR" && kustomize edit set image "${REGISTRY_HOST}/${IMAGE_NAME}:${DEPLOY_TAG}")
 kubectl apply -k "$MANIFESTS_DIR"
 
 echo ""
