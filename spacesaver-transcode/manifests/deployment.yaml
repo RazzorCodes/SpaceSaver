@@ -47,7 +47,7 @@ spec:
           volumeMounts:
             - name: source
               mountPath: /source
-              readOnly: true
+              readOnly: false
             - name: dest
               mountPath: /dest
             - name: workdir

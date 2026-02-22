@@ -64,6 +64,15 @@ def scan_sources(
             continue
 
         for root, _dirs, files in os.walk(source_dir):
+            # Limit depth to 3 levels relative to source_dir
+            rel_path = os.path.relpath(root, source_dir)
+            if rel_path == ".":
+                depth = 0
+            else:
+                depth = rel_path.count(os.sep) + 1
+
+            if depth >= 3:
+                _dirs.clear()  # Do not descend further
             for fname in files:
                 ext = os.path.splitext(fname)[1].lower()
                 if ext not in MEDIA_EXTENSIONS:
