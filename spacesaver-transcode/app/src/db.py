@@ -1,19 +1,29 @@
 """
-db.py — SQLite persistence layer for SpaceSaver.
+db.py — SQLite persistence layer for SpaceSaver (database-first architecture).
 
 Database location: /dest/.transcoder/state.db
-Schema is created on first run. All operations are thread-safe via a module-level lock.
+Normalised schema: entries, metadata, progress.
+Schema validation on startup: drop-and-recreate if mismatch.
+All operations are thread-safe via a module-level lock.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import sqlite3
 import threading
-from typing import List, Optional
+from typing import Dict, List, Optional
 
-from models import FileStatus, MediaFile, MediaType
+from models import (
+    DeclaredMetadata,
+    Entry,
+    FileStatus,
+    Metadata,
+    MetadataKind,
+    Progress,
+)
 
 log = logging.getLogger(__name__)
 
@@ -22,245 +32,352 @@ DB_PATH = os.path.join(DB_DIR, "state.db")
 
 _lock = threading.Lock()
 
+# ── Expected schema SQL ──────────────────────────────────────────────────────
 
-def _connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+_SCHEMA_SQL = """\
+CREATE TABLE entries (uuid TEXT PRIMARY KEY, name TEXT NOT NULL, hash TEXT NOT NULL, path TEXT NOT NULL, size INTEGER NOT NULL);
+CREATE TABLE metadata (uuid TEXT NOT NULL REFERENCES entries(uuid), kind TEXT NOT NULL, codec TEXT NOT NULL DEFAULT 'Unknown', format TEXT NOT NULL DEFAULT 'Unknown', sar TEXT NOT NULL DEFAULT 'Unknown', dar TEXT NOT NULL DEFAULT 'Unknown', resolution TEXT NOT NULL DEFAULT 'Unknown', framerate REAL NOT NULL DEFAULT 0.0, extra TEXT NOT NULL DEFAULT '{}', PRIMARY KEY (uuid, kind));
+CREATE TABLE progress (uuid TEXT PRIMARY KEY REFERENCES entries(uuid), status TEXT NOT NULL DEFAULT 'pending', progress REAL NOT NULL DEFAULT 0.0, frame_current INTEGER NOT NULL DEFAULT 0, frame_total INTEGER NOT NULL DEFAULT 0, workfile TEXT);
+CREATE INDEX idx_entries_hash ON entries(hash);
+CREATE INDEX idx_entries_path ON entries(path);
+CREATE INDEX idx_entries_size_desc ON entries(size DESC);
+CREATE INDEX idx_progress_status ON progress(status);
+"""
+
+# Normalised representation used for schema comparison
+_EXPECTED_TABLES = {
+    "entries": (
+        "CREATE TABLE entries ("
+        "uuid TEXT PRIMARY KEY, "
+        "name TEXT NOT NULL, "
+        "hash TEXT NOT NULL, "
+        "path TEXT NOT NULL, "
+        "size INTEGER NOT NULL)"
+    ),
+    "metadata": (
+        "CREATE TABLE metadata ("
+        "uuid TEXT NOT NULL REFERENCES entries(uuid), "
+        "kind TEXT NOT NULL, "
+        "codec TEXT NOT NULL DEFAULT 'Unknown', "
+        "format TEXT NOT NULL DEFAULT 'Unknown', "
+        "sar TEXT NOT NULL DEFAULT 'Unknown', "
+        "dar TEXT NOT NULL DEFAULT 'Unknown', "
+        "resolution TEXT NOT NULL DEFAULT 'Unknown', "
+        "framerate REAL NOT NULL DEFAULT 0.0, "
+        "extra TEXT NOT NULL DEFAULT '{}', "
+        "PRIMARY KEY (uuid, kind))"
+    ),
+    "progress": (
+        "CREATE TABLE progress ("
+        "uuid TEXT PRIMARY KEY REFERENCES entries(uuid), "
+        "status TEXT NOT NULL DEFAULT 'pending', "
+        "progress REAL NOT NULL DEFAULT 0.0, "
+        "frame_current INTEGER NOT NULL DEFAULT 0, "
+        "frame_total INTEGER NOT NULL DEFAULT 0, "
+        "workfile TEXT)"
+    ),
+}
+
+
+def _connect(db_path: Optional[str] = None) -> sqlite3.Connection:
+    path = db_path or DB_PATH
+    conn = sqlite3.connect(path, check_same_thread=False)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
     return conn
 
 
-def init_db() -> None:
-    """Create database directory and schema if they don't already exist."""
-    os.makedirs(DB_DIR, exist_ok=True)
-    with _lock, _connect() as conn:
+def _normalise_sql(sql: str) -> str:
+    """Collapse whitespace for schema comparison."""
+    return " ".join(sql.split())
+
+
+# ── Schema validation ────────────────────────────────────────────────────────
+
+def validate_schema(conn: sqlite3.Connection) -> bool:
+    """
+    Compare the current DB schema against the expected definition.
+    If mismatch: drop all tables and recreate.
+
+    Returns True if schema was already valid, False if it was dropped/recreated.
+    """
+    cur = conn.execute(
+        "SELECT name, sql FROM sqlite_master WHERE type='table' AND name IN (?, ?, ?)",
+        ("entries", "metadata", "progress"),
+    )
+    existing = {row["name"]: _normalise_sql(row["sql"]) for row in cur.fetchall()}
+
+    # Check each table
+    match = True
+    for table_name, expected_sql in _EXPECTED_TABLES.items():
+        actual_sql = existing.get(table_name)
+        if actual_sql is None or actual_sql != _normalise_sql(expected_sql):
+            match = False
+            break
+
+    if match and len(existing) == len(_EXPECTED_TABLES):
+        # <telemetry>: db_schema_validated — schema matches expected definition
+        log.info("[startup_flow] event=db_schema_validated")
+        return True
+
+    # Schema mismatch — drop and recreate
+    # <telemetry>: db_schema_mismatch_dropped — schema did not match, dropping all tables
+    log.warning("[startup_flow] event=db_schema_mismatch_dropped existing_tables=%s", list(existing.keys()))
+    conn.execute("DROP TABLE IF EXISTS metadata")
+    conn.execute("DROP TABLE IF EXISTS progress")
+    conn.execute("DROP TABLE IF EXISTS entries")
+    conn.executescript(_SCHEMA_SQL)
+    conn.commit()
+    return False
+
+
+# ── Initialisation ───────────────────────────────────────────────────────────
+
+def init_db(db_path: Optional[str] = None) -> sqlite3.Connection:
+    """Create database directory, connect, and validate/create schema."""
+    path = db_path or DB_PATH
+    db_dir = os.path.dirname(path)
+    if db_dir:
+        os.makedirs(db_dir, exist_ok=True)
+    with _lock:
+        conn = _connect(path)
+        validate_schema(conn)
+    log.info("Database initialised at %s", path)
+    return conn
+
+
+# ── Entry operations ─────────────────────────────────────────────────────────
+
+def insert_entry(conn: sqlite3.Connection, entry: Entry) -> None:
+    """Insert a new entry row. Ignores if uuid already exists."""
+    with _lock:
         conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS files (
-                uuid            TEXT PRIMARY KEY,
-                file_hash       TEXT UNIQUE NOT NULL,
-                source_path     TEXT NOT NULL,
-                dest_path       TEXT NOT NULL,
-                media_type      TEXT NOT NULL,
-                clean_title     TEXT NOT NULL,
-                year_or_episode TEXT NOT NULL,
-                status          TEXT NOT NULL DEFAULT 'pending',
-                progress        REAL NOT NULL DEFAULT 0.0,
-                error_count     INTEGER NOT NULL DEFAULT 0,
-                error_msg       TEXT,
-                tv_crf          INTEGER,
-                movie_crf       INTEGER,
-                tv_res_cap      INTEGER,
-                movie_res_cap   INTEGER
-            )
-            """
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_status ON files(status)"
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_hash ON files(file_hash)"
+            "INSERT OR IGNORE INTO entries (uuid, name, hash, path, size) VALUES (?, ?, ?, ?, ?)",
+            (entry.uuid, entry.name, entry.hash, entry.path, entry.size),
         )
         conn.commit()
-    log.info("Database initialised at %s", DB_PATH)
 
 
-def _row_to_media_file(row: sqlite3.Row) -> MediaFile:
-    return MediaFile(
+def get_entry_by_uuid(conn: sqlite3.Connection, uuid: str) -> Optional[Entry]:
+    with _lock:
+        cur = conn.execute("SELECT * FROM entries WHERE uuid = ?", (uuid,))
+        row = cur.fetchone()
+    if row is None:
+        return None
+    return Entry(uuid=row["uuid"], name=row["name"], hash=row["hash"],
+                 path=row["path"], size=row["size"])
+
+
+def get_entry_by_hash_and_path(conn: sqlite3.Connection, hash: str, path: str) -> Optional[Entry]:
+    with _lock:
+        cur = conn.execute(
+            "SELECT * FROM entries WHERE hash = ? AND path = ?", (hash, path)
+        )
+        row = cur.fetchone()
+    if row is None:
+        return None
+    return Entry(uuid=row["uuid"], name=row["name"], hash=row["hash"],
+                 path=row["path"], size=row["size"])
+
+
+def list_entries(conn: sqlite3.Connection) -> List[Entry]:
+    with _lock:
+        cur = conn.execute("SELECT * FROM entries ORDER BY rowid ASC")
+        rows = cur.fetchall()
+    return [
+        Entry(uuid=r["uuid"], name=r["name"], hash=r["hash"],
+              path=r["path"], size=r["size"])
+        for r in rows
+    ]
+
+
+# ── Metadata operations ─────────────────────────────────────────────────────
+
+def insert_metadata(conn: sqlite3.Connection, meta: Metadata) -> None:
+    """Insert or replace a metadata row."""
+    extra_json = json.dumps(meta.extra) if isinstance(meta.extra, dict) else meta.extra
+    with _lock:
+        conn.execute(
+            """INSERT OR REPLACE INTO metadata
+               (uuid, kind, codec, format, sar, dar, resolution, framerate, extra)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (meta.uuid, meta.kind.value, meta.codec, meta.format,
+             meta.sar, meta.dar, meta.resolution, meta.framerate, extra_json),
+        )
+        conn.commit()
+
+
+def get_metadata(conn: sqlite3.Connection, uuid: str, kind: MetadataKind) -> Optional[Metadata]:
+    with _lock:
+        cur = conn.execute(
+            "SELECT * FROM metadata WHERE uuid = ? AND kind = ?",
+            (uuid, kind.value),
+        )
+        row = cur.fetchone()
+    if row is None:
+        return None
+    extra = json.loads(row["extra"]) if row["extra"] else {}
+    return Metadata(
         uuid=row["uuid"],
-        file_hash=row["file_hash"],
-        source_path=row["source_path"],
-        dest_path=row["dest_path"],
-        media_type=MediaType(row["media_type"]),
-        clean_title=row["clean_title"],
-        year_or_episode=row["year_or_episode"],
-        status=FileStatus(row["status"]),
-        progress=row["progress"],
-        error_count=row["error_count"],
-        error_msg=row["error_msg"],
-        tv_crf=row["tv_crf"],
-        movie_crf=row["movie_crf"],
-        tv_res_cap=row["tv_res_cap"],
-        movie_res_cap=row["movie_res_cap"],
+        kind=MetadataKind(row["kind"]),
+        codec=row["codec"],
+        format=row["format"],
+        sar=row["sar"],
+        dar=row["dar"],
+        resolution=row["resolution"],
+        framerate=row["framerate"],
+        extra=extra,
     )
 
 
-def insert_file(mf: MediaFile) -> None:
-    with _lock, _connect() as conn:
+def get_all_metadata(conn: sqlite3.Connection, uuid: str) -> List[Metadata]:
+    with _lock:
+        cur = conn.execute("SELECT * FROM metadata WHERE uuid = ?", (uuid,))
+        rows = cur.fetchall()
+    result = []
+    for row in rows:
+        extra = json.loads(row["extra"]) if row["extra"] else {}
+        result.append(Metadata(
+            uuid=row["uuid"],
+            kind=MetadataKind(row["kind"]),
+            codec=row["codec"],
+            format=row["format"],
+            sar=row["sar"],
+            dar=row["dar"],
+            resolution=row["resolution"],
+            framerate=row["framerate"],
+            extra=extra,
+        ))
+    return result
+
+
+# ── Progress operations ──────────────────────────────────────────────────────
+
+def insert_progress(conn: sqlite3.Connection, progress: Progress) -> None:
+    """Insert a new progress row. Ignores if uuid already exists."""
+    with _lock:
         conn.execute(
-            """
-            INSERT OR IGNORE INTO files
-                (uuid, file_hash, source_path, dest_path, media_type,
-                 clean_title, year_or_episode, status, progress,
-                 error_count, error_msg, tv_crf, movie_crf, tv_res_cap, movie_res_cap)
-            VALUES
-                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                mf.uuid, mf.file_hash, mf.source_path, mf.dest_path,
-                mf.media_type.value, mf.clean_title, mf.year_or_episode,
-                mf.status.value, mf.progress, mf.error_count, mf.error_msg,
-                mf.tv_crf, mf.movie_crf, mf.tv_res_cap, mf.movie_res_cap,
-            ),
+            """INSERT OR IGNORE INTO progress
+               (uuid, status, progress, frame_current, frame_total, workfile)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (progress.uuid, progress.status.value, progress.progress,
+             progress.frame_current, progress.frame_total, progress.workfile),
         )
         conn.commit()
 
 
-def update_status(uuid: str, status: FileStatus, progress: float = 0.0) -> None:
-    with _lock, _connect() as conn:
+def get_progress(conn: sqlite3.Connection, uuid: str) -> Optional[Progress]:
+    with _lock:
+        cur = conn.execute("SELECT * FROM progress WHERE uuid = ?", (uuid,))
+        row = cur.fetchone()
+    if row is None:
+        return None
+    return Progress(
+        uuid=row["uuid"],
+        status=FileStatus(row["status"]),
+        progress=row["progress"],
+        frame_current=row["frame_current"],
+        frame_total=row["frame_total"],
+        workfile=row["workfile"],
+    )
+
+
+def set_status(conn: sqlite3.Connection, uuid: str, status: FileStatus) -> None:
+    with _lock:
         conn.execute(
-            "UPDATE files SET status = ?, progress = ? WHERE uuid = ?",
-            (status.value, progress, uuid),
+            "UPDATE progress SET status = ? WHERE uuid = ?",
+            (status.value, uuid),
         )
         conn.commit()
 
 
-def update_progress(uuid: str, progress: float) -> None:
-    with _lock, _connect() as conn:
-        conn.execute(
-            "UPDATE files SET progress = ? WHERE uuid = ?",
-            (progress, uuid),
-        )
-        conn.commit()
-
-
-def update_error(uuid: str, msg: str) -> None:
-    with _lock, _connect() as conn:
-        conn.execute(
-            """
-            UPDATE files
-            SET status = ?, error_count = error_count + 1, error_msg = ?
-            WHERE uuid = ?
-            """,
-            (FileStatus.ERROR.value, msg, uuid),
-        )
-        conn.commit()
-
-
-def update_quality_override(uuid: str, overrides: dict) -> None:
-    allowed = {"tv_crf", "movie_crf", "tv_res_cap", "movie_res_cap"}
-    fields = {k: v for k, v in overrides.items() if k in allowed}
-    if not fields:
+def update_progress(conn: sqlite3.Connection, uuid: str, **fields) -> None:
+    """Update one or more fields on the progress row."""
+    allowed = {"status", "progress", "frame_current", "frame_total", "workfile"}
+    updates = {k: v for k, v in fields.items() if k in allowed}
+    if not updates:
         return
-    set_clause = ", ".join(f"{k} = ?" for k in fields)
-    with _lock, _connect() as conn:
+    # Convert enum to value
+    if "status" in updates and isinstance(updates["status"], FileStatus):
+        updates["status"] = updates["status"].value
+    set_clause = ", ".join(f"{k} = ?" for k in updates)
+    values = list(updates.values()) + [uuid]
+    with _lock:
         conn.execute(
-            f"UPDATE files SET {set_clause} WHERE uuid = ?",  # noqa: S608
-            (*fields.values(), uuid),
+            f"UPDATE progress SET {set_clause} WHERE uuid = ?",  # noqa: S608
+            values,
         )
         conn.commit()
 
 
-def reset_file(uuid: str) -> bool:
-    """Clear error state and requeue a failed file. Returns True if found."""
-    with _lock, _connect() as conn:
+# ── Query helpers ────────────────────────────────────────────────────────────
+
+def query_best_candidate(conn: sqlite3.Connection) -> Optional[Entry]:
+    """
+    Find the best PENDING entry: join progress for status=PENDING,
+    order by entries.size DESC, take first.
+    """
+    with _lock:
         cur = conn.execute(
-            "SELECT status FROM files WHERE uuid = ?", (uuid,)
+            """SELECT e.* FROM entries e
+               JOIN progress p ON e.uuid = p.uuid
+               WHERE p.status = ?
+               ORDER BY e.size DESC
+               LIMIT 1""",
+            (FileStatus.PENDING.value,),
         )
         row = cur.fetchone()
-        if row is None:
-            return False
-        conn.execute(
-            """
-            UPDATE files
-            SET status = ?, progress = 0.0, error_count = 0, error_msg = NULL
-            WHERE uuid = ?
-            """,
-            (FileStatus.PENDING.value, uuid),
-        )
-        conn.commit()
-    return True
+    if row is None:
+        return None
+    return Entry(uuid=row["uuid"], name=row["name"], hash=row["hash"],
+                 path=row["path"], size=row["size"])
 
 
-
-def skip_file(uuid: str) -> bool:
-    """Permanently skip a file. Returns True if found."""
-    with _lock, _connect() as conn:
-        cur = conn.execute("SELECT uuid FROM files WHERE uuid = ?", (uuid,))
-        if cur.fetchone() is None:
-            return False
-        conn.execute(
-            "UPDATE files SET status = ? WHERE uuid = ?",
-            (FileStatus.SKIPPED.value, uuid),
-        )
-        conn.commit()
-    return True
-
-
-def get_by_uuid(uuid: str) -> Optional[MediaFile]:
-    with _lock, _connect() as conn:
-        cur = conn.execute("SELECT * FROM files WHERE uuid = ?", (uuid,))
-        row = cur.fetchone()
-    return _row_to_media_file(row) if row else None
-
-
-def get_by_hash(file_hash: str) -> Optional[MediaFile]:
-    with _lock, _connect() as conn:
-        cur = conn.execute("SELECT * FROM files WHERE file_hash = ?", (file_hash,))
-        row = cur.fetchone()
-    return _row_to_media_file(row) if row else None
-
-
-def list_all() -> List[MediaFile]:
-    with _lock, _connect() as conn:
-        cur = conn.execute("SELECT * FROM files ORDER BY rowid ASC")
-        rows = cur.fetchall()
-    return [_row_to_media_file(r) for r in rows]
-
-
-def list_by_status(status: FileStatus) -> List[MediaFile]:
-    with _lock, _connect() as conn:
+def has_active_queue(conn: sqlite3.Connection) -> bool:
+    """Return True if any item is QUEUED or IN_PROGRESS."""
+    with _lock:
         cur = conn.execute(
-            "SELECT * FROM files WHERE status = ? ORDER BY rowid ASC",
-            (status.value,),
+            "SELECT COUNT(*) as cnt FROM progress WHERE status IN (?, ?)",
+            (FileStatus.QUEUED.value, FileStatus.IN_PROGRESS.value),
         )
-        rows = cur.fetchall()
-    return [_row_to_media_file(r) for r in rows]
+        row = cur.fetchone()
+    return row["cnt"] > 0
 
 
-def count_by_status() -> dict:
-    with _lock, _connect() as conn:
+def count_by_status(conn: sqlite3.Connection) -> Dict[str, int]:
+    with _lock:
         cur = conn.execute(
-            "SELECT status, COUNT(*) as cnt FROM files GROUP BY status"
+            "SELECT status, COUNT(*) as cnt FROM progress GROUP BY status"
         )
         rows = cur.fetchall()
     return {row["status"]: row["cnt"] for row in rows}
 
 
-def reset_already_optimal(uuid: Optional[str] = None) -> int:
+# ── Composite insert (convenience) ──────────────────────────────────────────
+
+def insert_new_file(conn: sqlite3.Connection, entry: Entry, declared_meta: Metadata) -> None:
     """
-    Revert ALREADY_OPTIMAL files back to PENDING so they get re-evaluated
-    against the current quality settings.
-
-    If uuid is given, only that file is affected.
-    Returns the number of rows updated.
+    Insert a new file: entry row + declared metadata row + progress row (PENDING).
+    All three in a single transaction.
     """
-    with _lock, _connect() as conn:
-        if uuid is not None:
-            cur = conn.execute(
-                "UPDATE files SET status = ?, progress = 0.0 WHERE uuid = ? AND status = ?",
-                (FileStatus.PENDING.value, uuid, FileStatus.ALREADY_OPTIMAL.value),
-            )
-        else:
-            cur = conn.execute(
-                "UPDATE files SET status = ?, progress = 0.0 WHERE status = ?",
-                (FileStatus.PENDING.value, FileStatus.ALREADY_OPTIMAL.value),
-            )
-        conn.commit()
-    count = cur.rowcount
-    if count:
-        log.info("Reset %d already-optimal file(s) to pending for re-evaluation", count)
-    return count
-
-
-def reset_in_progress() -> int:
-    """On startup, reset any IN_PROGRESS files back to PENDING."""
-    with _lock, _connect() as conn:
-        cur = conn.execute(
-            "UPDATE files SET status = ?, progress = 0.0 WHERE status = ?",
-            (FileStatus.PENDING.value, FileStatus.IN_PROGRESS.value),
+    extra_json = json.dumps(declared_meta.extra) if isinstance(declared_meta.extra, dict) else declared_meta.extra
+    with _lock:
+        conn.execute(
+            "INSERT OR IGNORE INTO entries (uuid, name, hash, path, size) VALUES (?, ?, ?, ?, ?)",
+            (entry.uuid, entry.name, entry.hash, entry.path, entry.size),
+        )
+        conn.execute(
+            """INSERT OR REPLACE INTO metadata
+               (uuid, kind, codec, format, sar, dar, resolution, framerate, extra)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (declared_meta.uuid, declared_meta.kind.value, declared_meta.codec,
+             declared_meta.format, declared_meta.sar, declared_meta.dar,
+             declared_meta.resolution, declared_meta.framerate, extra_json),
+        )
+        conn.execute(
+            """INSERT OR IGNORE INTO progress
+               (uuid, status, progress, frame_current, frame_total, workfile)
+               VALUES (?, ?, 0.0, 0, 0, NULL)""",
+            (entry.uuid, FileStatus.PENDING.value),
         )
         conn.commit()
-    count = cur.rowcount
-    if count:
-        log.warning("Reset %d in-progress file(s) to pending on startup", count)
-    return count

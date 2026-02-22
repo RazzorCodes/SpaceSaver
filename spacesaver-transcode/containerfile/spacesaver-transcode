@@ -7,7 +7,7 @@ RUN apt-get update && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-FROM base AS app
+FROM base AS setup
 
 # Bust the app-stage cache on every build (value injected by build.sh)
 ARG CACHE_BUST
@@ -28,4 +28,6 @@ EXPOSE 8000
 
 # Run the Flask application (threaded mode — Flask handles the two background
 # threads and API requests concurrently within the same process)
+
+FROM setup AS app
 CMD ["python", "src/app.py"]

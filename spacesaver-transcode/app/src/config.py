@@ -29,7 +29,7 @@ class Config:
         self._movie_crf: int = _parse_env_int("MOVIE_CRF", 16)
         self._tv_res_cap: int = _parse_env_int("TV_RES_CAP", 1080)
         self._movie_res_cap: int = _parse_env_int("MOVIE_RES_CAP", 2160)
-        self._rescan_interval: int = _parse_env_int("RESCAN_INTERVAL", 600)
+
 
     # --- Getters ---
 
@@ -53,10 +53,7 @@ class Config:
         with self._lock:
             return self._movie_res_cap
 
-    @property
-    def rescan_interval(self) -> int:
-        with self._lock:
-            return self._rescan_interval
+
 
     # --- Setters (for live update via API) ---
 
@@ -70,8 +67,7 @@ class Config:
                 self._tv_res_cap = int(data["tv_res_cap"])
             if "movie_res_cap" in data:
                 self._movie_res_cap = int(data["movie_res_cap"])
-            if "rescan_interval" in data:
-                self._rescan_interval = int(data["rescan_interval"])
+
 
     def to_dict(self) -> dict:
         with self._lock:
@@ -80,7 +76,7 @@ class Config:
                 "movie_crf": self._movie_crf,
                 "tv_res_cap": self._tv_res_cap,
                 "movie_res_cap": self._movie_res_cap,
-                "rescan_interval": self._rescan_interval,
+
             }
 
 

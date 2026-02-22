@@ -1,91 +1,155 @@
 """
-models.py — Dataclasses and enums for SpaceSaver.
+models.py — Dataclasses and enums for SpaceSaver (database-first architecture).
+
+Three normalised tables: entries, metadata, progress.
 """
 
 from __future__ import annotations
 
+import json
 import uuid as _uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional
+from typing import Any, Dict, Optional
 
 
-class MediaType(str, Enum):
-    MOVIE = "movie"
-    TV = "tv"
-
+# ── Enums ────────────────────────────────────────────────────────────────────
 
 class FileStatus(str, Enum):
+    UNKNOWN = "unknown"
     PENDING = "pending"
+    QUEUED = "queued"
     IN_PROGRESS = "in_progress"
+    OPTIMUM = "optimum"
     DONE = "done"
-    ERROR = "error"
-    SKIPPED = "skipped"
-    ALREADY_OPTIMAL = "already_optimal"
+
+
+class MetadataKind(str, Enum):
+    DECLARED = "declared"
+    ACTUAL = "actual"
+
+
+# ── Sentinel ─────────────────────────────────────────────────────────────────
+
+UNKNOWN_SENTINEL = "Unknown"
+
+
+# ── Core dataclasses ─────────────────────────────────────────────────────────
+
+@dataclass
+class Entry:
+    """Core identity row in the `entries` table."""
+    uuid: str
+    name: str
+    hash: str
+    path: str
+    size: int
+
+    @staticmethod
+    def new(name: str, hash: str, path: str, size: int) -> Entry:
+        return Entry(
+            uuid=str(_uuid.uuid4()),
+            name=name,
+            hash=hash,
+            path=path,
+            size=size,
+        )
+
+    def to_dict(self) -> dict:
+        return {
+            "uuid": self.uuid,
+            "name": self.name,
+            "hash": self.hash,
+            "path": self.path,
+            "size": self.size,
+        }
 
 
 @dataclass
-class MediaFile:
+class Metadata:
+    """Stream properties row in the `metadata` table (FK → entries.uuid)."""
     uuid: str
-    file_hash: str
-    source_path: str
-    dest_path: str
-    media_type: MediaType
-    clean_title: str
-    year_or_episode: str
-    status: FileStatus = FileStatus.PENDING
-    progress: float = 0.0          # 0.0 – 100.0 (historic)
-    frame_now: int = 0             # current frame tracker
-    frame_total: int = 0           # total estimated frames
-    error_count: int = 0
-    error_msg: Optional[str] = None
-    tv_crf: Optional[int] = None   # per-file override
-    movie_crf: Optional[int] = None
-    tv_res_cap: Optional[int] = None
-    movie_res_cap: Optional[int] = None
+    kind: MetadataKind
+    codec: str = UNKNOWN_SENTINEL
+    format: str = UNKNOWN_SENTINEL
+    sar: str = UNKNOWN_SENTINEL
+    dar: str = UNKNOWN_SENTINEL
+    resolution: str = UNKNOWN_SENTINEL
+    framerate: float = 0.0
+    extra: Dict[str, Any] = field(default_factory=dict)
 
-    @staticmethod
-    def new(
-        file_hash: str,
-        source_path: str,
-        dest_path: str,
-        media_type: MediaType,
-        clean_title: str,
-        year_or_episode: str,
-    ) -> "MediaFile":
-        return MediaFile(
-            uuid=str(_uuid.uuid4()),
-            file_hash=file_hash,
-            source_path=source_path,
-            dest_path=dest_path,
-            media_type=media_type,
-            clean_title=clean_title,
-            year_or_episode=year_or_episode,
-        )
-
-    def to_dict(self, full: bool = False) -> dict:
-        base = {
+    def to_dict(self) -> dict:
+        return {
             "uuid": self.uuid,
-            "name": f"{self.clean_title} {self.year_or_episode}".strip(),
-            "status": self.status.value,
-            "media_type": self.media_type.value,
-            "progress": {
-                "frame": {
-                    "now": self.frame_now,
-                    "total": self.frame_total
-                }
-            },
+            "kind": self.kind.value,
+            "codec": self.codec,
+            "format": self.format,
+            "sar": self.sar,
+            "dar": self.dar,
+            "resolution": self.resolution,
+            "framerate": self.framerate,
+            "extra": self.extra,
         }
-        if full:
-            base["file_hash"] = self.file_hash
-            base["source_path"] = self.source_path
-            base["dest_path"] = self.dest_path
-            base["error_count"] = self.error_count
-            base["error_msg"] = self.error_msg
-            base["quality_overrides"] = {
-                "tv_crf": self.tv_crf,
-                "movie_crf": self.movie_crf,
-                "tv_res_cap": self.tv_res_cap,
-                "movie_res_cap": self.movie_res_cap,
-            }
-        return base
+
+
+@dataclass
+class Progress:
+    """Transcoding state row in the `progress` table (FK → entries.uuid)."""
+    uuid: str
+    status: FileStatus = FileStatus.PENDING
+    progress: float = 0.0
+    frame_current: int = 0
+    frame_total: int = 0
+    workfile: Optional[str] = None
+
+    def to_dict(self) -> dict:
+        return {
+            "uuid": self.uuid,
+            "status": self.status.value,
+            "progress": self.progress,
+            "frame_current": self.frame_current,
+            "frame_total": self.frame_total,
+            "workfile": self.workfile,
+        }
+
+
+# ── Classifier output ────────────────────────────────────────────────────────
+
+@dataclass
+class DeclaredMetadata:
+    """
+    Output of the classifier — one per file.
+
+    Every field defaults to the Unknown sentinel. A field parse failure must not
+    affect other fields. No field is ever None.
+    """
+    codec: str = UNKNOWN_SENTINEL
+    format: str = UNKNOWN_SENTINEL
+    sar: str = UNKNOWN_SENTINEL
+    dar: str = UNKNOWN_SENTINEL
+    resolution: str = UNKNOWN_SENTINEL
+    framerate: str = UNKNOWN_SENTINEL
+
+    @property
+    def parsed_field_count(self) -> int:
+        """Number of fields that were successfully parsed (not Unknown)."""
+        all_fields = [self.codec, self.format, self.sar, self.dar,
+                      self.resolution, self.framerate]
+        return sum(1 for v in all_fields if v != UNKNOWN_SENTINEL)
+
+    @property
+    def unknown_field_count(self) -> int:
+        return 6 - self.parsed_field_count
+
+    def to_metadata(self, uuid: str) -> Metadata:
+        """Convert to a Metadata row with kind=DECLARED."""
+        return Metadata(
+            uuid=uuid,
+            kind=MetadataKind.DECLARED,
+            codec=self.codec,
+            format=self.format,
+            sar=self.sar,
+            dar=self.dar,
+            resolution=self.resolution,
+            framerate=float(self.framerate) if self.framerate != UNKNOWN_SENTINEL else 0.0,
+        )

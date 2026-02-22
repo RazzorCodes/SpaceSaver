@@ -1,2 +1,5 @@
 /instructions.md
 **.pyc
+*.log
+.venv
+*.mkv

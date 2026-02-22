@@ -1,20 +1,17 @@
 """
 app.py — Flask application and HTTP API entry point for SpaceSaver.
 
-Endpoints (all cluster-internal, no auth):
-  GET  /list                     — all files (summary)
-  GET  /list/<uuid>              — single file (full detail)
-  GET  /status                   — queue summary, current file, ETA
-  GET  /version                  — image version string
-  GET  /config/quality           — current global quality settings
-  POST /config/quality           — update global quality settings
-  POST /config/quality/<uuid>    — per-file quality override (+ requeue if DONE)
-  POST /control/reset/<uuid>     — clear error and requeue
-  POST /control/skip/<uuid>      — permanently skip a file
+Database-first, on-demand architecture:
+  - On startup: validate schema → scan sources once → ready
+  - No auto-transcoder — files are processed only when explicitly enqueued
 
-The scanner and transcoder are started as daemon threads on first request
-(via before_first_request / startup hook) so the pod passes readiness checks
-before the first scan completes.
+Endpoints (all cluster-internal, no auth):
+  GET  /list                        — all files (summary)
+  GET  /list/<uuid>                 — single file (full detail)
+  GET  /status                      — queue summary
+  GET  /version                     — image version string
+  POST /request/enqueue/<uuid>      — enqueue a specific file
+  POST /request/enqueue/best        — auto-select and enqueue the best candidate
 """
 
 from __future__ import annotations
@@ -23,14 +20,12 @@ import logging
 import os
 import pathlib
 import threading
-import time
 
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify
 
 import db
 import scanner
 import transcoder
-from config import cfg
 from models import FileStatus
 
 logging.basicConfig(
@@ -39,12 +34,16 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
+# <telemetry>: service_start — SpaceSaver transcoder starting up
+
 app = Flask(__name__)
 
 _started = False
 _startup_lock = threading.Lock()
-_start_time = time.time()
+_conn = None  # module-level DB connection, set during startup
 _VERSION_FILE = pathlib.Path(__file__).parent.parent / "version.txt"
+
+SOURCE_DIRS = ["/source"]  # configurable list of source directories
 
 
 def _read_version() -> str:
@@ -55,15 +54,31 @@ def _read_version() -> str:
 
 
 def _ensure_started() -> None:
-    global _started  # noqa: PLW0603
+    global _started, _conn  # noqa: PLW0603
     if not _started:
         with _startup_lock:
             if not _started:
                 _started = True
-                db.init_db()
-                scanner.start()
-                transcoder.start()
-                log.info("SpaceSaver started. Uptime clock running.")
+
+                # 1. Init DB (validate schema, drop-recreate if mismatch)
+                _conn = db.init_db()
+
+                # 2. Scan sources once (do not auto-start processing)
+                result = scanner.scan_sources(SOURCE_DIRS, _conn)
+                log.info(
+                    "Startup scan complete: added=%d skipped=%d errors=%d",
+                    result.added, result.skipped, result.errors,
+                )
+
+                # 3. Start the transcoder worker thread (picks up QUEUED items)
+                transcoder.start(_conn)
+
+                log.info("SpaceSaver started (on-demand mode).")
+
+
+def _get_conn():
+    """Get the module-level DB connection (initialised during startup)."""
+    return _conn
 
 
 @app.before_request
@@ -78,149 +93,155 @@ def version():
     return jsonify({"version": _read_version()})
 
 
-# ─── /list ───────────────────────────────────────────────────────────────────
+# ─── /list ──────────────────────────────────────────────────────────────────
 
 @app.get("/list")
 def list_all():
-    files = db.list_all()
-    return jsonify([f.to_dict(full=False) for f in files])
+    conn = _get_conn()
+    entries = db.list_entries(conn)
+    items = []
+    for entry in entries:
+        progress = db.get_progress(conn, entry.uuid)
+        meta = db.get_metadata(conn, entry.uuid, db.MetadataKind.DECLARED)
+        items.append({
+            "uuid": entry.uuid,
+            "name": entry.name,
+            "size": entry.size,
+            "status": progress.status.value if progress else "unknown",
+            "progress": progress.progress if progress else 0.0,
+            "codec": meta.codec if meta else "Unknown",
+        })
+    return jsonify(items)
 
 
 @app.get("/list/<uuid>")
 def list_one(uuid: str):
-    mf = db.get_by_uuid(uuid)
-    if mf is None:
+    conn = _get_conn()
+    entry = db.get_entry_by_uuid(conn, uuid)
+    if entry is None:
         return jsonify({"error": "not found"}), 404
-    return jsonify(mf.to_dict(full=True))
+
+    progress = db.get_progress(conn, uuid)
+    metadata_rows = db.get_all_metadata(conn, uuid)
+
+    result = entry.to_dict()
+    result["progress"] = progress.to_dict() if progress else None
+    result["metadata"] = [m.to_dict() for m in metadata_rows]
+    return jsonify(result)
 
 
-# ─── /status ─────────────────────────────────────────────────────────────────
+# ─── /status ────────────────────────────────────────────────────────────────
 
 @app.get("/status")
 def status():
-    counts = db.count_by_status()
+    conn = _get_conn()
+    counts = db.count_by_status(conn)
     total = sum(counts.values())
-    done = counts.get(FileStatus.DONE.value, 0)
     pending = counts.get(FileStatus.PENDING.value, 0)
+    queued = counts.get(FileStatus.QUEUED.value, 0)
     in_progress = counts.get(FileStatus.IN_PROGRESS.value, 0)
-    error = counts.get(FileStatus.ERROR.value, 0)
-    skipped = counts.get(FileStatus.SKIPPED.value, 0)
+    done = counts.get(FileStatus.DONE.value, 0)
+    optimum = counts.get(FileStatus.OPTIMUM.value, 0)
 
-    current, current_start, frame_now, frame_total = transcoder.get_current_info()
-    current_info = None
-    eta_seconds = None
+    current_info = transcoder.get_current_info()
 
-    if current is not None:
-        progress = current.progress
-        current_info = {
-            "uuid": current.uuid,
-            "name": f"{current.clean_title} {current.year_or_episode}".strip(),
-            "progress": {
-                "frame": {
-                    "now": frame_now,
-                    "total": frame_total
-                }
-            },
-        }
-        # ETA based on file start time
-        if frame_now > 100 and current_start > 0:
-            elapsed = time.time() - current_start
-            rate = progress / max(elapsed, 1.0)
-            remaining = (100.0 - progress) / max(rate, 0.01)
-            eta_seconds = int(remaining)
-
-    return jsonify(
-        {
-            "total": total,
-            "pending": pending,
-            "in_progress": in_progress,
-            "done": done,
-            "error": error,
-            "skipped": skipped,
-            "already_optimal": counts.get(FileStatus.ALREADY_OPTIMAL.value, 0),
-            "current_file": current_info,
-            "eta_seconds": eta_seconds,
-        }
-    )
+    return jsonify({
+        "total": total,
+        "pending": pending,
+        "queued": queued,
+        "in_progress": in_progress,
+        "done": done,
+        "optimum": optimum,
+        "current_file": current_info,
+    })
 
 
-# ─── /current ────────────────────────────────────────────────────────────────
+# ─── /request/enqueue ──────────────────────────────────────────────────────
 
-@app.get("/current")
-def current():
-    mf = transcoder.get_current_file()
-    if mf is None:
-        return "", 204
-    return jsonify(mf.to_dict(full=True))
+@app.post("/request/enqueue/<uuid>")
+def enqueue_uuid(uuid: str):
+    """
+    Enqueue a specific file for transcoding.
+
+    Flow:
+      1. Look up uuid in entries — 404 if not found
+      2. Check progress.status — reject 409 if already QUEUED or IN_PROGRESS
+      3. Set status → QUEUED
+      4. Return 202 Accepted
+    """
+    conn = _get_conn()
+
+    # <telemetry>: enqueue_requested(uuid=<uuid>) — enqueue request received
+    log.info("[enqueue_flow] event=enqueue_requested uuid=%s", uuid)
+
+    # 1. Look up entry
+    entry = db.get_entry_by_uuid(conn, uuid)
+    if entry is None:
+        # <telemetry>: enqueue_rejected(reason=not_found)
+        log.info("[enqueue_flow] event=enqueue_rejected uuid=%s reason=not_found", uuid)
+        return jsonify({"error": "not found"}), 404
+
+    # 2. Check current status
+    progress = db.get_progress(conn, uuid)
+    if progress is not None and progress.status in (FileStatus.QUEUED, FileStatus.IN_PROGRESS):
+        # <telemetry>: enqueue_rejected(reason=already_active)
+        log.info(
+            "[enqueue_flow] event=enqueue_rejected uuid=%s reason=already_%s",
+            uuid, progress.status.value,
+        )
+        return jsonify({"error": f"already {progress.status.value}"}), 409
+
+    # 3. Set status → QUEUED
+    db.set_status(conn, uuid, FileStatus.QUEUED)
+
+    # <telemetry>: enqueue_accepted — file queued for transcoding
+    log.info("[enqueue_flow] event=enqueue_accepted uuid=%s", uuid)
+
+    return jsonify({"uuid": uuid, "status": "queued"}), 202
 
 
-# ─── /config/quality ─────────────────────────────────────────────────────────
+@app.post("/request/enqueue/best")
+def enqueue_best():
+    """
+    Select and enqueue the best candidate automatically.
 
-@app.get("/config/quality")
-def get_quality():
-    return jsonify(cfg.to_dict())
+    Selection: PENDING files ordered by size DESC, take first.
+    Rejects with 409 if queue already has QUEUED/IN_PROGRESS item.
+    Returns 404 if no eligible candidates.
+    """
+    conn = _get_conn()
 
+    # <telemetry>: enqueue_best_requested — best-candidate enqueue request received
+    log.info("[enqueue_best_flow] event=enqueue_best_requested")
 
-@app.post("/config/quality")
-def set_quality():
-    data = request.get_json(silent=True) or {}
-    cfg.update(data)
-    reset_count = db.reset_already_optimal()
-    scanner.trigger_rescan()
+    # Check if queue already has an active item
+    if db.has_active_queue(conn):
+        # <telemetry>: enqueue_best_conflict — queue already has active item
+        log.info("[enqueue_best_flow] event=enqueue_best_conflict")
+        return jsonify({"error": "queue already active"}), 409
+
+    # Find best candidate
+    best = db.query_best_candidate(conn)
+    if best is None:
+        # <telemetry>: enqueue_best_no_candidate — no eligible PENDING files
+        log.info("[enqueue_best_flow] event=enqueue_best_no_candidate")
+        return jsonify({"error": "no eligible candidates"}), 404
+
+    # Enqueue it
+    db.set_status(conn, best.uuid, FileStatus.QUEUED)
+
+    # <telemetry>: enqueue_best_selected(uuid=<uuid>, size=<size>) — candidate selected
     log.info(
-        "Quality config updated. %d already-optimal file(s) requeued; rescan triggered.",
-        reset_count,
+        "[enqueue_best_flow] event=enqueue_best_selected uuid=%s size=%d",
+        best.uuid, best.size,
     )
-    return jsonify({"ok": True, "config": cfg.to_dict(), "requeued": reset_count})
+
+    return jsonify({"uuid": best.uuid, "name": best.name, "size": best.size}), 202
 
 
-@app.post("/config/quality/<uuid>")
-def set_quality_for_file(uuid: str):
-    mf = db.get_by_uuid(uuid)
-    if mf is None:
-        return jsonify({"error": "not found"}), 404
-
-    data = request.get_json(silent=True) or {}
-    allowed = {"tv_crf", "movie_crf", "tv_res_cap", "movie_res_cap"}
-    overrides = {k: v for k, v in data.items() if k in allowed}
-    db.update_quality_override(uuid, overrides)
-
-    # Requeue if DONE or ALREADY_OPTIMAL so it gets re-evaluated / re-encoded
-    if mf.status == FileStatus.DONE:
-        db.update_status(uuid, FileStatus.PENDING, 0.0)
-        log.info("Requeued %s for re-encode with new quality settings", uuid)
-    elif mf.status == FileStatus.ALREADY_OPTIMAL:
-        db.reset_already_optimal(uuid)
-        log.info("Requeued already-optimal file %s for re-evaluation", uuid)
-
-    return jsonify({"ok": True})
-
-
-# ─── /control ────────────────────────────────────────────────────────────────
-
-@app.post("/control/reset/<uuid>")
-def reset_file(uuid: str):
-    ok = db.reset_file(uuid)
-    if not ok:
-        return jsonify({"error": "not found"}), 404
-    log.info("Reset file %s to pending", uuid)
-    return jsonify({"ok": True})
-
-
-@app.post("/control/skip/<uuid>")
-def skip_file(uuid: str):
-    ok = db.skip_file(uuid)
-    if not ok:
-        return jsonify({"error": "not found"}), 404
-    log.info("Skipped file %s", uuid)
-    return jsonify({"ok": True})
-
-
-# ─── Entrypoint ──────────────────────────────────────────────────────────────
+# ─── Entrypoint ─────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "8000"))
-    # Threaded=True so the two background threads + Flask can all run concurrently.
-    # For production you'd use gunicorn, but for a single-pod workload Flask dev
-    # server with threading is fine and avoids an extra dependency.
     app.run(host="0.0.0.0", port=port, threaded=True)
+    # <telemetry>: service_stop — SpaceSaver transcoder shutting down

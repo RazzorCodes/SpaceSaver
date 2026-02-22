@@ -1,26 +1,21 @@
 """
-classifier.py — Determine media type, extract clean title, and derive year/episode string.
+classifier.py — Determine media metadata from a filename string.
 
-Classification logic:
-  - TV: path contains an episode pattern (S##E##, s##e##) OR a season folder
-  - Movie: everything else
-
-Title extraction (in priority order):
-  1. 'title' tag from MKV/container metadata via ffprobe (stripped of junk + watermarks)
-  2. Filename-based cleaning: strip all junk tokens, then truncate at the year
-     (everything after the year in a filename is release group noise)
+Hardened per §2.2:
+  - Input:  raw filename string
+  - Output: DeclaredMetadata dataclass — never a dict, never None
+  - All parsing is defensive: a field parse failure does not affect other fields
+  - No exceptions escape — partial results with Unknown sentinels
+  - Fully unit-testable without filesystem access or ffprobe
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import re
-import subprocess
-from typing import Optional, Tuple
 
-from models import MediaType
+from models import DeclaredMetadata, UNKNOWN_SENTINEL
 
 log = logging.getLogger(__name__)
 
@@ -40,8 +35,34 @@ _SEASON_LABEL_RE = re.compile(r"[Ss]eason[\s._-]*(\d{1,2})", re.IGNORECASE)
 # Year: 4-digit number in the 1900s or 2000s
 _YEAR_RE = re.compile(r"\b(19|20)\d{2}\b")
 
-# Website watermark prefixes: "www.something.org", "www.something.com - "
-# Also handles IP or plain domain watermarks like "domain.tld - Title"
+# Resolution patterns
+_RESOLUTION_RE = re.compile(
+    r"\b(2160p|1080p|1080i|720p|576p|480p|4[Kk]|[Uu][Hh][Dd])\b",
+    re.IGNORECASE,
+)
+
+# Codec patterns from filename
+_CODEC_RE = re.compile(
+    r"\b(hevc|x265|x264|h\.?264|h\.?265|avc|xvid|divx|av1|vp9|vp8)\b",
+    re.IGNORECASE,
+)
+
+# Format / pixel format indicators
+_FORMAT_RE = re.compile(
+    r"\b(10[._-]?bit|10bit|8bit|12bit|hdr|hdr10|hdr10\+|dv|dolby[\._\s]?vision|hlg)\b",
+    re.IGNORECASE,
+)
+
+# SAR/DAR patterns (unlikely in filenames but defensive)
+_DAR_RE = re.compile(r"\b(\d+:\d+)\b")
+
+# Framerate patterns
+_FRAMERATE_RE = re.compile(
+    r"\b(\d{2}(?:\.\d{1,2})?)\s*fps\b",
+    re.IGNORECASE,
+)
+
+# Website watermark prefixes
 _URL_WATERMARK_RE = re.compile(
     r"^(?:www\.[\w\-]+\.[\w]{2,6}|[\w\-]+\.(?:com|net|org|io|tv|me))"
     r"[\s._\-]*(?:-\s*)?",
@@ -49,13 +70,12 @@ _URL_WATERMARK_RE = re.compile(
 )
 
 # Separator-delimited watermark: "SomeGroup - Actual Title"
-# Remove a leading segment followed by " - " if it looks like a group/URL
 _LEADING_TAG_RE = re.compile(
     r"^[\w\.\s]{1,40}\s+-\s+",
     re.IGNORECASE,
 )
 
-# Junk tokens to strip from filenames and metadata titles
+# Junk tokens to strip from filenames
 _JUNK_TOKENS = re.compile(
     r"\b("
     # Resolution
@@ -75,9 +95,9 @@ _JUNK_TOKENS = re.compile(
     # Release type
     r"|remux|repack|proper|extended|theatrical|directors[\._\s]?cut|unrated|retail"
     r"|internal|limited|complete|season|episode"
-    # Common release groups (can't catch all, but hit the most common)
+    # Common release groups
     r"|yts|yify|rarbg|eztv|ettv|mkvcage|sparks|fgt|ntb|nf|ion10"
-    r"|tigole|qxr|bhdstudio|framestor|cinemageddon|framestor"
+    r"|tigole|qxr|bhdstudio|framestor|cinemageddon"
     # Generic noise
     r"|sample|trailer|featurette|extras?"
     r")\b",
@@ -87,141 +107,140 @@ _JUNK_TOKENS = re.compile(
 _PUNCT_RE = re.compile(r"[\.\-_]+")
 _MULTI_SPACE_RE = re.compile(r"\s{2,}")
 _BRACKETS_RE = re.compile(r"[\[\](){}<>]")
-# Trailing noise: sequences of numbers/letters that look like hashes or IDs
 _TRAILING_NOISE_RE = re.compile(r"\s+[a-zA-Z0-9]{8,}\s*$")
 
 
-def _probe_title(path: str) -> Optional[str]:
-    """Read the 'title' metadata tag from the container using ffprobe."""
-    try:
-        result = subprocess.run(
-            [
-                "ffprobe", "-v", "quiet",
-                "-print_format", "json",
-                "-show_format",
-                path,
-            ],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        data = json.loads(result.stdout)
-        raw = data.get("format", {}).get("tags", {}).get("title", "")
-        return raw.strip() or None
-    except Exception as exc:  # noqa: BLE001
-        log.debug("ffprobe title extraction failed for %s: %s", path, exc)
-        return None
-
+# ── Pure functions ───────────────────────────────────────────────────────────
 
 def _strip_watermark(text: str) -> str:
-    """
-    Strip website/group watermarks that appear before the real title.
-    Handles patterns like:
-      - "www.UIndex.org - Harry Potter..."
-      - "SomeGroup - Movie Title"
-    """
-    # Try explicit URL prefix first
+    """Strip website/group watermarks that appear before the real title."""
     cleaned = _URL_WATERMARK_RE.sub("", text).strip()
     if cleaned != text:
         return cleaned
-    # Try "Word(s) - Title" pattern only if the leading segment is short
-    # and doesn't look like it's part of a real title
     m = _LEADING_TAG_RE.match(text)
     if m:
         candidate = text[m.end():].strip()
-        # Only strip if the remaining text is plausibly a title (≥3 chars)
         if len(candidate) >= 3:
             return candidate
     return text
 
 
-def _clean_tag_title(raw: str) -> str:
-    """Clean a metadata title tag."""
-    text = raw.strip()
-    # Strip website/group watermarks
-    text = _strip_watermark(text)
-    # Strip junk codec/source tokens
-    text = _JUNK_TOKENS.sub("", text)
-    # Strip year (stored separately as year_or_episode)
-    text = _YEAR_RE.sub("", text)
-    # Strip leftover brackets and punctuation runs
-    text = _BRACKETS_RE.sub(" ", text)
-    text = _MULTI_SPACE_RE.sub(" ", text).strip(" -_.")
-    return text or raw.strip()
-
-
-def _clean_from_filename(path: str) -> str:
+def clean_filename(raw: str) -> str:
     """
-    Derive a clean title from the filename.
+    Clean a raw filename into a human-readable title.
 
-    Key insight: in media filenames, everything after the year (or after junk
-    codec/source tokens start) is release group noise. We truncate there.
+    Pure function — no side effects, no filesystem access, independently testable.
     """
-    name = os.path.splitext(os.path.basename(path))[0]
+    # Start from basename without extension
+    name = os.path.splitext(os.path.basename(raw))[0]
+
+    # Strip watermarks
+    name = _strip_watermark(name)
 
     # Replace dots/underscores/dashes with spaces
     name = _PUNCT_RE.sub(" ", name)
-    # Remove brackets and their contents — usually tags like [YTS], (2022)
+    # Remove brackets
     name = _BRACKETS_RE.sub(" ", name)
 
     # Find the year's position and truncate everything after it
     m = _YEAR_RE.search(name)
     if m:
-        # Keep only the part before the year (year itself is stored separately)
         name = name[: m.start()].strip()
     else:
         # No year found — strip junk tokens instead
         name = _JUNK_TOKENS.sub("", name)
 
     name = _MULTI_SPACE_RE.sub(" ", name).strip(" -_.")
-    return name.title()
 
-
-def _extract_year(path: str, title: str) -> Optional[str]:
-    """Find a year in the path or title."""
-    for text in (os.path.basename(path), title):
-        m = _YEAR_RE.search(text)
-        if m:
-            return m.group(0)
-    return None
-
-
-def _extract_episode(path: str) -> Optional[str]:
-    m = _EP_LABEL_RE.search(path)
-    if m:
-        return m.group(1).upper()   # e.g. S01E03
-    m = _SEASON_LABEL_RE.search(path)
-    if m:
-        return f"S{int(m.group(1)):02d}"
-    return None
-
-
-def classify(path: str) -> Tuple[MediaType, str, str]:
-    """
-    Returns (media_type, clean_title, year_or_episode).
-
-    year_or_episode examples:
-      Movie: "2001"
-      TV:    "S01E03" or "S02"
-    """
-    is_tv = bool(_EP_PATTERN.search(path))
-    media_type = MediaType.TV if is_tv else MediaType.MOVIE
-
-    # --- Title ---
-    raw_tag = _probe_title(path)
-    if raw_tag:
-        clean_title = _clean_tag_title(raw_tag)
-    else:
-        clean_title = _clean_from_filename(path)
+    # Title-case the result
+    result = name.title() if name else raw.strip()
 
     # Truncate absurdly long titles
-    if len(clean_title) > 120:
-        clean_title = clean_title[:120].rsplit(" ", 1)[0]
+    if len(result) > 120:
+        result = result[:120].rsplit(" ", 1)[0]
 
-    # --- Year / Episode ---
-    if is_tv:
-        year_or_episode = _extract_episode(path) or ""
-    else:
-        year_or_episode = _extract_year(path, clean_title) or ""
+    return result
 
-    return media_type, clean_title, year_or_episode
+
+# ── Field extractors (each catches its own errors) ──────────────────────────
+
+def _extract_codec(filename: str) -> str:
+    try:
+        m = _CODEC_RE.search(filename)
+        if m:
+            raw = m.group(1).lower()
+            # Normalise common variants
+            norm = {"x265": "h265", "x264": "h264", "h.265": "h265", "h.264": "h264"}
+            return norm.get(raw, raw)
+    except Exception:  # noqa: BLE001
+        pass
+    return UNKNOWN_SENTINEL
+
+
+def _extract_format(filename: str) -> str:
+    try:
+        m = _FORMAT_RE.search(filename)
+        if m:
+            raw = m.group(1).lower().replace(".", "").replace("-", "").replace("_", "")
+            return raw
+    except Exception:  # noqa: BLE001
+        pass
+    return UNKNOWN_SENTINEL
+
+
+def _extract_resolution(filename: str) -> str:
+    try:
+        m = _RESOLUTION_RE.search(filename)
+        if m:
+            raw = m.group(1).lower()
+            res_map = {
+                "2160p": "3840x2160", "4k": "3840x2160", "uhd": "3840x2160",
+                "1080p": "1920x1080", "1080i": "1920x1080",
+                "720p": "1280x720",
+                "576p": "720x576",
+                "480p": "720x480",
+            }
+            return res_map.get(raw, raw)
+    except Exception:  # noqa: BLE001
+        pass
+    return UNKNOWN_SENTINEL
+
+
+def _extract_framerate(filename: str) -> str:
+    try:
+        m = _FRAMERATE_RE.search(filename)
+        if m:
+            return m.group(1)
+    except Exception:  # noqa: BLE001
+        pass
+    return UNKNOWN_SENTINEL
+
+
+# ── Main classifier ─────────────────────────────────────────────────────────
+
+def classify(filename: str) -> DeclaredMetadata:
+    """
+    Classify a raw filename into declared metadata.
+
+    Input:  raw filename string (not a full path — just the filename)
+    Output: DeclaredMetadata dataclass — never None, never a dict.
+            Failed fields are set to the Unknown sentinel.
+    No exceptions escape this function.
+    """
+    try:
+        result = DeclaredMetadata(
+            codec=_extract_codec(filename),
+            format=_extract_format(filename),
+            resolution=_extract_resolution(filename),
+            framerate=_extract_framerate(filename),
+            # SAR and DAR are rarely in filenames — default to Unknown
+            sar=UNKNOWN_SENTINEL,
+            dar=UNKNOWN_SENTINEL,
+        )
+    except Exception:  # noqa: BLE001
+        # Total failure — return all-Unknown
+        result = DeclaredMetadata()
+
+    # <telemetry>: classifier_result(uuid=<caller-provides>, declared_fields_parsed=N, fields_unknown=N)
+    #   — emitted by the caller since classifier doesn't know the uuid
+    return result

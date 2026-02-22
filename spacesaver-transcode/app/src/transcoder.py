@@ -1,19 +1,15 @@
 """
-transcoder.py — Background thread that encodes PENDING files one at a time.
+transcoder.py — On-demand transcoder worker for SpaceSaver.
 
 Responsibilities:
-  - Pick next PENDING file from the DB
-  - Build and run an ffmpeg subprocess:
-      - Scale video to resolution cap (only if source exceeds it)
-      - Encode with libx265 at the appropriate CRF
-      - Copy existing lossy audio tracks (AAC, AC3, EAC3, DTS, MP3, Opus)
-      - Re-encode uncompressed/lossless audio (PCM, TrueHD, FLAC) to
-          AAC (surround ≥3 channels) or Opus (stereo/mono)
-      - Copy all subtitle streams unchanged
-  - Write to /workdir/<uuid>.mkv, then atomically move to /dest/... on success
-  - Retry once on failure; mark ERROR after two failures
-  - Persist IN_PROGRESS state to a progress JSON for crash recovery
-  - Append successful file hash to the flat file
+  - A single worker thread watches for QUEUED items
+  - Picks up the next QUEUED file, sets IN_PROGRESS, encodes it
+  - Status transitions: QUEUED → IN_PROGRESS → DONE / OPTIMUM
+  - Writes temp file to /workdir/<uuid>.mkv, moves to /dest/... on success
+  - Progress tracked in the `progress` table
+
+No auto-start loop — transcoding is triggered by the enqueue endpoints
+setting a file's status to QUEUED.
 """
 
 from __future__ import annotations
@@ -22,23 +18,22 @@ import json
 import logging
 import os
 import shutil
+import sqlite3
 import subprocess
 import threading
 import time
-from typing import Optional, Tuple
+from typing import Dict, Optional, Tuple
 
 import ffmpeg
 
 import db
 from config import cfg
-from models import FileStatus, MediaFile, MediaType
+from models import Entry, FileStatus, Progress
 
 log = logging.getLogger(__name__)
 
 WORKDIR = "/workdir"
 DEST_DIR = "/dest"
-FLAT_FILE = os.path.join(DEST_DIR, ".spacesaver-transcode")
-PROGRESS_DIR = "/dest/.transcoder/progress"
 
 # Audio codecs considered lossless / uncompressed → need re-encoding
 _LOSSLESS_CODECS = {
@@ -51,8 +46,6 @@ _LOSSLESS_CODECS = {
 _HEVC_CODECS = {"hevc", "h265"}
 
 # Conservative CRF → max expected bitrate (kbps) at 1080p for libx265.
-# If the source is already *below* this threshold (normalised to 1080p)
-# the encode would produce a larger or identical file — skip it.
 _CRF_BITRATE_TABLE = {
     16: 8000,
     18: 5500,
@@ -62,72 +55,40 @@ _CRF_BITRATE_TABLE = {
     26: 1200,
     28:  800,
 }
-_CRF_BITRATE_DEFAULT = 5500  # fallback for CRF values not in the table
+_CRF_BITRATE_DEFAULT = 5500
 _PIXELS_1080P = 1920 * 1080
 
 _stop_event = threading.Event()
-_current_file: Optional[MediaFile] = None
-_current_start_time: float = 0.0
-_current_frame_now: int = 0
-_current_frame_total: int = 0
+_conn: Optional[sqlite3.Connection] = None
+
+# Current file tracking for /status endpoint
+_current_entry: Optional[Entry] = None
+_current_progress: Optional[Dict] = None
 _current_lock = threading.Lock()
 
 
-def get_current_info() -> Tuple[Optional[MediaFile], float, int, int]:
+def get_current_info() -> Optional[dict]:
+    """Return current file info for the /status endpoint."""
     with _current_lock:
-        return _current_file, _current_start_time, _current_frame_now, _current_frame_total
+        if _current_entry is None:
+            return None
+        return {
+            "uuid": _current_entry.uuid,
+            "name": _current_entry.name,
+            "frame_current": (_current_progress or {}).get("frame_current", 0),
+            "frame_total": (_current_progress or {}).get("frame_total", 0),
+            "progress": (_current_progress or {}).get("progress", 0.0),
+        }
 
 
-def get_current_file() -> Optional[MediaFile]:
+def _set_current(entry: Optional[Entry], progress_info: Optional[Dict] = None) -> None:
+    global _current_entry, _current_progress  # noqa: PLW0603
     with _current_lock:
-        return _current_file
+        _current_entry = entry
+        _current_progress = progress_info or {}
 
 
-def _set_current(mf: Optional[MediaFile], total_frames: int = 0) -> None:
-    global _current_file, _current_start_time, _current_frame_now, _current_frame_total  # noqa: PLW0603
-    with _current_lock:
-        _current_file = mf
-        _current_start_time = time.time() if mf is not None else 0.0
-        _current_frame_now = 0
-        _current_frame_total = total_frames
-
-
-def _write_progress_json(mf: MediaFile) -> None:
-    os.makedirs(PROGRESS_DIR, exist_ok=True)
-    data = {
-        "uuid": mf.uuid,
-        "source_path": mf.source_path,
-        "dest_path": mf.dest_path,
-        "status": mf.status.value,
-    }
-    path = os.path.join(PROGRESS_DIR, f"{mf.uuid}.json")
-    with open(path, "w") as f:
-        json.dump(data, f)
-
-
-def _remove_progress_json(uuid: str) -> None:
-    path = os.path.join(PROGRESS_DIR, f"{uuid}.json")
-    try:
-        os.remove(path)
-    except FileNotFoundError:
-        pass
-
-
-def _cleanup_workdir(uuid: str) -> None:
-    tmp = os.path.join(WORKDIR, f"{uuid}.mkv")
-    try:
-        os.remove(tmp)
-    except FileNotFoundError:
-        pass
-
-
-def _append_flat_file(file_hash: str) -> None:
-    try:
-        with open(FLAT_FILE, "a") as f:
-            f.write(file_hash + "\n")
-    except OSError as exc:
-        log.error("Could not append to flat file: %s", exc)
-
+# ── ffprobe helpers ──────────────────────────────────────────────────────────
 
 def _probe_streams(source_path: str) -> list:
     """Return list of stream dicts from ffprobe."""
@@ -145,7 +106,6 @@ def _is_lossless(codec_name: str) -> bool:
 
 
 def _is_dts_hd(codec_name: str, profile: str) -> bool:
-    """DTS-HD MA and DTS:X are lossless; plain DTS is lossy."""
     name = codec_name.lower()
     prof = (profile or "").lower()
     if name != "dts":
@@ -153,23 +113,20 @@ def _is_dts_hd(codec_name: str, profile: str) -> bool:
     return "ma" in prof or "hd" in prof or "x" in prof
 
 
-def _effective_crf(mf: MediaFile) -> int:
-    if mf.media_type == MediaType.TV:
-        return mf.tv_crf if mf.tv_crf is not None else cfg.tv_crf
-    return mf.movie_crf if mf.movie_crf is not None else cfg.movie_crf
+def _effective_crf(entry: Entry) -> int:
+    """Determine CRF — for now uses global config (per-file overrides removed)."""
+    # TODO: re-add per-file overrides when quality config endpoints return
+    return cfg.movie_crf
 
 
-def _effective_res_cap(mf: MediaFile) -> int:
-    if mf.media_type == MediaType.TV:
-        return mf.tv_res_cap if mf.tv_res_cap is not None else cfg.tv_res_cap
-    return mf.movie_res_cap if mf.movie_res_cap is not None else cfg.movie_res_cap
+def _effective_res_cap(entry: Entry) -> int:
+    """Determine resolution cap — for now uses global config."""
+    return cfg.movie_res_cap
 
 
 def _crf_bitrate_threshold(crf: int) -> int:
-    """Return the 1080p bitrate ceiling (kbps) for a given CRF value."""
     if crf in _CRF_BITRATE_TABLE:
         return _CRF_BITRATE_TABLE[crf]
-    # Linear interpolation between the two nearest table entries
     lower = max((k for k in _CRF_BITRATE_TABLE if k <= crf), default=None)
     upper = min((k for k in _CRF_BITRATE_TABLE if k >= crf), default=None)
     if lower is None:
@@ -181,75 +138,69 @@ def _crf_bitrate_threshold(crf: int) -> int:
     return int(lo_bps + ratio * (hi_bps - lo_bps))
 
 
-def _should_skip(mf: MediaFile, streams: list, probe: dict) -> tuple[bool, str]:
+# ── Skip detection ───────────────────────────────────────────────────────────
+
+def _should_skip(entry: Entry, streams: list, probe: dict) -> Tuple[bool, str]:
     """
     Decide whether encoding this file would be wasteful.
-
     Returns (skip: bool, reason: str).
     """
     video_streams = [s for s in streams if s.get("codec_type") == "video"]
 
-    # 1. Source is already HEVC — re-encoding is guaranteed quality loss.
+    # 1. Source is already HEVC
     for vs in video_streams:
         codec = vs.get("codec_name", "").lower()
         if codec in _HEVC_CODECS:
             return True, "source is already HEVC/H.265"
 
-    # 2. Source bitrate already below what the configured CRF would produce.
+    # 2. Source bitrate already below CRF threshold
     try:
         source_kbps = int(probe.get("format", {}).get("bit_rate", 0)) // 1000
     except (TypeError, ValueError):
         source_kbps = 0
 
     if source_kbps > 0:
-        # Normalise bitrate to 1080p-equivalent using the largest video stream
         max_pixels = max(
             (vs.get("width", 1920) * vs.get("height", 1080) for vs in video_streams),
             default=_PIXELS_1080P,
         )
         normalised_kbps = int(source_kbps * _PIXELS_1080P / max(max_pixels, 1))
-        threshold = _crf_bitrate_threshold(_effective_crf(mf))
+        crf = _effective_crf(entry)
+        threshold = _crf_bitrate_threshold(crf)
         if normalised_kbps < threshold:
             return (
                 True,
                 f"source bitrate {source_kbps} kbps (≈{normalised_kbps} kbps @1080p) "
-                f"already below CRF {_effective_crf(mf)} threshold {threshold} kbps",
+                f"already below CRF {crf} threshold {threshold} kbps",
             )
 
     return False, ""
 
 
-def _build_cmd(mf: MediaFile, tmp_path: str, streams: list) -> list:
-    """
-    Build the ffmpeg CLI command as a list of arguments.
+# ── ffmpeg command builder ───────────────────────────────────────────────────
 
-    Uses -map to explicitly select streams rather than the ffmpeg-python node
-    graph, which is error-prone when combining filtered and unfiltered streams.
-    """
-    crf = _effective_crf(mf)
-    res_cap = _effective_res_cap(mf)
+def _build_cmd(entry: Entry, tmp_path: str, streams: list) -> list:
+    crf = _effective_crf(entry)
+    res_cap = _effective_res_cap(entry)
 
     audio_streams = [s for s in streams if s.get("codec_type") == "audio"]
     video_streams = [s for s in streams if s.get("codec_type") == "video"]
 
     cmd = [
         "ffmpeg", "-y", "-loglevel", "error",
-        "-i", mf.source_path,
-        # Map all streams explicitly
-        "-map", "0:v",    # all video tracks
-        "-map", "0:a",    # all audio tracks
-        "-map", "0:s?",   # all subtitle tracks (? = don't fail if none)
-        # Video: libx265
+        "-i", entry.path,
+        "-map", "0:v?",
+        "-map", "0:a?",
+        "-map", "0:s?",
         "-c:v", "libx265",
         "-crf", str(crf),
         "-preset", "slow",
         "-x265-params", "log-level=error",
     ]
 
-    # Video scaling: only downscale if source height exceeds cap
+    # Video scaling
     max_height = max((s.get("height", 0) for s in video_streams), default=0)
     if res_cap > 0 and max_height > res_cap:
-        # scale=-2:H → ffmpeg computes width to maintain AR, rounded to even
         cmd += ["-vf", f"scale=-2:{res_cap}"]
 
     # Audio: per-stream codec selection
@@ -260,7 +211,6 @@ def _build_cmd(mf: MediaFile, tmp_path: str, streams: list) -> list:
     )
 
     if not any_lossless:
-        # All lossy — bulk copy is safe and simpler
         cmd += ["-c:a", "copy"]
     else:
         for i, ast in enumerate(audio_streams):
@@ -275,23 +225,20 @@ def _build_cmd(mf: MediaFile, tmp_path: str, streams: list) -> list:
             else:
                 cmd += [f"-c:a:{i}", "copy"]
 
-    # Subtitles: always copy
     cmd += ["-c:s", "copy"]
-
-    # Progress reporting to stdout (parsed by _encode)
     cmd += ["-progress", "pipe:1", "-nostats"]
-
-    # Output format and path
     cmd += ["-f", "matroska", tmp_path]
 
     return cmd
 
 
-def _encode(mf: MediaFile, streams: list) -> None:
-    """Run ffmpeg as a subprocess, updating progress in the DB from stdout."""
-    tmp_path = os.path.join(WORKDIR, f"{mf.uuid}.mkv")
+# ── Encoding ─────────────────────────────────────────────────────────────────
 
-    # Estimate total frames for progress calculation
+def _encode(conn: sqlite3.Connection, entry: Entry, streams: list) -> None:
+    """Run ffmpeg as a subprocess, updating progress in the DB from stdout."""
+    tmp_path = os.path.join(WORKDIR, f"{entry.uuid}.mkv")
+
+    # Estimate total frames
     video_streams = [s for s in streams if s.get("codec_type") == "video"]
     total_frames = 0
     for vs in video_streams:
@@ -308,21 +255,20 @@ def _encode(mf: MediaFile, streams: list) -> None:
             pass
         total_frames += int(fps * duration)
 
-    # Also try container duration as fallback
+    # Fallback: container duration
     if total_frames == 0:
         try:
-            probe = ffmpeg.probe(mf.source_path)
+            probe = ffmpeg.probe(entry.path)
             dur = float(probe.get("format", {}).get("duration", 0) or 0)
-            total_frames = int(dur * 25)  # rough estimate
+            total_frames = int(dur * 25)
         except Exception:  # noqa: BLE001
             pass
 
-    # Update global state so the `/status` endpoint can instantly see both fields
-    with _current_lock:
-        global _current_frame_total  # noqa: PLW0603
-        _current_frame_total = total_frames
+    # Update progress with total frames
+    db.update_progress(conn, entry.uuid, frame_total=total_frames)
+    _set_current(entry, {"frame_current": 0, "frame_total": total_frames, "progress": 0.0})
 
-    cmd = _build_cmd(mf, tmp_path, streams)
+    cmd = _build_cmd(entry, tmp_path, streams)
     log.debug("ffmpeg cmd: %s", " ".join(cmd))
 
     process = subprocess.Popen(
@@ -334,7 +280,9 @@ def _encode(mf: MediaFile, streams: list) -> None:
     )
 
     frames_done = 0
-    # process.stdout is a text stream when universal_newlines=True
+    last_logged_progress = -5.0
+    last_logged_time = time.time()
+
     for line in process.stdout:
         line = line.strip()
         if line.startswith("frame="):
@@ -342,16 +290,32 @@ def _encode(mf: MediaFile, streams: list) -> None:
                 frames_done = int(line.split("=", 1)[1])
             except ValueError:
                 pass
-            
-            with _current_lock:
-                global _current_frame_now  # noqa: PLW0603
-                _current_frame_now = frames_done
-                
+
             if total_frames > 0:
                 progress = min(99.0, (frames_done * 100.0) / total_frames)
             else:
-                progress = 0.0  # Cannot compute percent, wait for total_frames
-            db.update_progress(mf.uuid, progress)
+                progress = 0.0
+
+            db.update_progress(
+                conn, entry.uuid,
+                progress=progress,
+                frame_current=frames_done,
+            )
+
+            with _current_lock:
+                if _current_progress is not None:
+                    _current_progress["frame_current"] = frames_done
+                    _current_progress["progress"] = progress
+
+            # <telemetry>: transcode_progress(uuid=<uuid>, progress=<pct>, frame=<n>/<total>)
+            now = time.time()
+            if progress - last_logged_progress >= 5.0 or (now - last_logged_time) >= 3600:
+                log.info(
+                    "[transcode_flow] event=transcode_progress uuid=%s progress=%.1f frames=%d/%d",
+                    entry.uuid, progress, frames_done, total_frames,
+                )
+                last_logged_progress = progress
+                last_logged_time = now
 
     process.wait()
     if process.returncode != 0:
@@ -359,102 +323,117 @@ def _encode(mf: MediaFile, streams: list) -> None:
         if process.stderr:
             out_bytes = process.stderr.read()
             if out_bytes:
-                stderr_out = out_bytes.decode("utf-8", errors="ignore").strip()
+                stderr_out = out_bytes if isinstance(out_bytes, str) else out_bytes.decode("utf-8", errors="ignore")
+                stderr_out = stderr_out.strip()
         raise RuntimeError(
             f"ffmpeg exited {process.returncode}: {stderr_out[-600:]}"
         )
 
 
-def _process_file(mf: MediaFile) -> None:
-    tmp_path = os.path.join(WORKDIR, f"{mf.uuid}.mkv")
-    dest_dir = os.path.dirname(mf.dest_path)
+# ── File processing ──────────────────────────────────────────────────────────
+
+def _dest_path_for(entry: Entry) -> str:
+    """Build a destination path under /dest mirroring the source structure."""
+    # Use the source path relative to any /source prefix
+    source_dir = "/source"
+    if entry.path.startswith(source_dir):
+        rel = os.path.relpath(entry.path, source_dir)
+    else:
+        rel = os.path.basename(entry.path)
+    rel_dir = os.path.dirname(rel)
+    filename = f"{entry.hash}.{entry.name}.mkv"
+    return os.path.join(DEST_DIR, rel_dir, filename)
+
+
+def _cleanup_workdir(uuid: str) -> None:
+    tmp = os.path.join(WORKDIR, f"{uuid}.mkv")
+    try:
+        os.remove(tmp)
+    except FileNotFoundError:
+        pass
+
+
+def _process_file(conn: sqlite3.Connection, entry: Entry) -> None:
+    """Process a single QUEUED file through the transcode pipeline."""
+    tmp_path = os.path.join(WORKDIR, f"{entry.uuid}.mkv")
+    dest_path = _dest_path_for(entry)
+    dest_dir = os.path.dirname(dest_path)
+
+    # <telemetry>: transcode_started(uuid=<uuid>) — beginning transcode
+    log.info("[transcode_flow] event=transcode_started uuid=%s path=%s", entry.uuid, entry.path)
 
     # ── Pre-flight: probe streams and decide whether to skip ────────────────
-    streams = _probe_streams(mf.source_path)
+    streams = _probe_streams(entry.path)
     if not streams:
-        db.update_error(mf.uuid, "ffprobe returned no streams")
+        log.error("[transcode_flow] event=transcode_failed uuid=%s reason=no_streams", entry.uuid)
+        db.update_progress(conn, entry.uuid, status=FileStatus.PENDING)
         return
 
     try:
-        probe = ffmpeg.probe(mf.source_path)
+        probe = ffmpeg.probe(entry.path)
     except ffmpeg.Error as exc:
-        db.update_error(mf.uuid, f"ffprobe failed: {exc}")
+        log.error("[transcode_flow] event=transcode_failed uuid=%s reason=probe_error error=%s", entry.uuid, exc)
+        db.update_progress(conn, entry.uuid, status=FileStatus.PENDING)
         return
 
-    skip, reason = _should_skip(mf, streams, probe)
+    skip, reason = _should_skip(entry, streams, probe)
     if skip:
-        db.update_status(mf.uuid, FileStatus.ALREADY_OPTIMAL, 100.0)
-        log.info(
-            "Skipping %s (%s): %s",
-            mf.clean_title,
-            mf.year_or_episode,
-            reason,
-        )
+        db.update_progress(conn, entry.uuid, status=FileStatus.OPTIMUM, progress=100.0)
+        # <telemetry>: transcode_skipped(uuid=<uuid>, reason=<reason>)
+        log.info("[transcode_flow] event=transcode_skipped uuid=%s reason=%s", entry.uuid, reason)
         return
 
     # ── Encode ───────────────────────────────────────────────────────────────
-    db.update_status(mf.uuid, FileStatus.IN_PROGRESS, 0.0)
-    mf.status = FileStatus.IN_PROGRESS
-    _write_progress_json(mf)
-    _set_current(mf)
-    log.info("Encoding: %s → %s", mf.source_path, mf.dest_path)
+    db.update_progress(
+        conn, entry.uuid,
+        status=FileStatus.IN_PROGRESS,
+        progress=0.0,
+        workfile=tmp_path,
+    )
+    _set_current(entry, {"frame_current": 0, "frame_total": 0, "progress": 0.0})
 
     try:
-        _encode(mf, streams=streams)
+        _encode(conn, entry, streams=streams)
 
         # Move to final destination
         os.makedirs(dest_dir, exist_ok=True)
-        shutil.move(tmp_path, mf.dest_path)
+        shutil.move(tmp_path, dest_path)
 
-        db.update_status(mf.uuid, FileStatus.DONE, 100.0)
-        _append_flat_file(mf.file_hash)
-        _remove_progress_json(mf.uuid)
-        log.info("Done: %s", mf.dest_path)
+        db.update_progress(conn, entry.uuid, status=FileStatus.DONE, progress=100.0, workfile=None)
+
+        # <telemetry>: transcode_completed(uuid=<uuid>) — transcode finished
+        log.info("[transcode_flow] event=transcode_completed uuid=%s dest=%s", entry.uuid, dest_path)
 
         # Delete original source to reclaim space
         try:
-            os.remove(mf.source_path)
-            log.info("Deleted source file: %s", mf.source_path)
+            os.remove(entry.path)
+            log.info("[transcode_flow] event=source_deleted path=%s", entry.path)
         except OSError as exc:
-            log.warning("Could not delete source file %s: %s", mf.source_path, exc)
+            log.warning("[transcode_flow] event=source_delete_failed path=%s error=%s", entry.path, exc)
 
     except Exception as exc:  # noqa: BLE001
-        _cleanup_workdir(mf.uuid)
+        _cleanup_workdir(entry.uuid)
+        # <telemetry>: transcode_failed(uuid=<uuid>, error=<msg>)
         error_msg = str(exc)
-        fresh = db.get_by_uuid(mf.uuid)
-        error_count = fresh.error_count if fresh else 0
-        if error_count < 1:
-            # First failure — bump error count, requeue
-            db.update_error(mf.uuid, error_msg)
-            db.update_status(mf.uuid, FileStatus.PENDING, 0.0)
-            log.warning("Encode failed (will retry once): %s — %s", mf.clean_title, error_msg)
-        else:
-            # Second failure — permanent error
-            db.update_error(mf.uuid, error_msg)
-            log.error("Encode failed permanently: %s — %s", mf.clean_title, error_msg)
-
-        _remove_progress_json(mf.uuid)
+        log.error("[transcode_flow] event=transcode_failed uuid=%s error=%s", entry.uuid, error_msg)
+        db.update_progress(conn, entry.uuid, status=FileStatus.PENDING, progress=0.0, workfile=None)
 
     finally:
-        _set_current(None, 0)
+        _set_current(None)
 
+
+# ── Worker loop ──────────────────────────────────────────────────────────────
 
 def _on_startup_cleanup() -> None:
-    """Clean up any leftover workdir temp files from a previous crash."""
-    # Ensure the workdir is accessible and writable
+    """Clean up leftover workdir temp files from a previous crash."""
     try:
         os.makedirs(WORKDIR, exist_ok=True)
     except OSError as exc:
         log.error("Cannot create workdir %s: %s — encodes will fail", WORKDIR, exc)
 
     if not os.access(WORKDIR, os.W_OK):
-        log.error(
-            "Workdir %s is not writable. "
-            "Check volume mount permissions (run.sh: --userns=keep-id).",
-            WORKDIR,
-        )
+        log.error("Workdir %s is not writable.", WORKDIR)
 
-    # Remove leftover temp files from a previous crash
     try:
         for fname in os.listdir(WORKDIR):
             if fname.endswith(".mkv"):
@@ -463,30 +442,48 @@ def _on_startup_cleanup() -> None:
                 os.remove(path)
     except OSError:
         pass
-    db.reset_in_progress()
 
 
+def _pick_next_queued(conn: sqlite3.Connection) -> Optional[Entry]:
+    """Pick the next QUEUED entry (by insertion order)."""
+    cur = conn.execute(
+        """SELECT e.* FROM entries e
+           JOIN progress p ON e.uuid = p.uuid
+           WHERE p.status = ?
+           ORDER BY e.rowid ASC
+           LIMIT 1""",
+        (FileStatus.QUEUED.value,),
+    )
+    row = cur.fetchone()
+    if row is None:
+        return None
+    return Entry(uuid=row["uuid"], name=row["name"], hash=row["hash"],
+                 path=row["path"], size=row["size"])
 
-def run() -> None:
-    """Entry point for the transcoder background thread."""
+
+def run(conn: sqlite3.Connection) -> None:
+    """Entry point for the transcoder worker thread."""
     _on_startup_cleanup()
-    log.info("Transcoder started. Workdir: %s", WORKDIR)
+    log.info("Transcoder worker started. Workdir: %s", WORKDIR)
     while not _stop_event.is_set():
-        pending = db.list_by_status(FileStatus.PENDING)
-        if not pending:
-            _stop_event.wait(10)
-            continue
-        mf = pending[0]
-        try:
-            _process_file(mf)
-        except Exception as exc:  # noqa: BLE001
-            log.exception("Unexpected transcoder error: %s", exc)
+        entry = _pick_next_queued(conn)
+        if entry is None:
+            # <telemetry>: alive(file=None, progress=0, cpu=..., mem=...) — idle heartbeat
             _stop_event.wait(5)
-    log.info("Transcoder stopped.")
+            continue
+        try:
+            _process_file(conn, entry)
+        except Exception as exc:  # noqa: BLE001
+            log.exception("[transcode_flow] event=unexpected_error error=%s", exc)
+            _stop_event.wait(5)
+    # <telemetry>: service_stop — transcoder worker shutting down
+    log.info("Transcoder worker stopped.")
 
 
-def start() -> threading.Thread:
-    t = threading.Thread(target=run, name="transcoder", daemon=True)
+def start(conn: sqlite3.Connection) -> threading.Thread:
+    global _conn  # noqa: PLW0603
+    _conn = conn
+    t = threading.Thread(target=run, args=(conn,), name="transcoder", daemon=True)
     t.start()
     return t
 

@@ -1,138 +1,128 @@
 """
-scanner.py — Background thread that watches the source library and enqueues new files.
+scanner.py — One-shot source directory scanner for SpaceSaver.
 
-Behaviour:
-  - Walks /source on every rescan tick (default: 10 minutes)
-  - Computes a fast hash for each candidate file
-  - Skips files already recorded in the DB (any status) or in the flat file
-  - New files are classified and inserted into the DB as PENDING
+Behaviour (startup only):
+  - Walk configured source directories once
+  - Compute hash + size for each candidate file
+  - Match against existing entries by hash + path
+  - Insert newly discovered files as PENDING
+  - Do not re-insert or update files already present and unchanged
 """
 
 from __future__ import annotations
 
 import logging
 import os
-import threading
-from typing import Set
+import sqlite3
+from dataclasses import dataclass
+from typing import Callable, List
 
 import classifier
 import db
-from config import cfg
 from hash import compute_hash
-from models import MediaFile
+from models import Entry
 
 log = logging.getLogger(__name__)
 
-SOURCE_DIR = "/source"
-DEST_DIR = "/dest"
-FLAT_FILE = os.path.join(DEST_DIR, ".spacesaver-transcode")
-
 MEDIA_EXTENSIONS = {".mkv", ".mp4", ".avi", ".mov", ".m4v", ".ts", ".wmv"}
 
-_stop_event = threading.Event()
-_rescan_event = threading.Event()  # set to wake scanner before next interval
+
+@dataclass
+class ScanResult:
+    added: int = 0
+    skipped: int = 0
+    errors: int = 0
 
 
-def _load_flat_file() -> Set[str]:
-    """Return the set of hashes already recorded in the flat file."""
-    hashes: Set[str] = set()
-    if not os.path.exists(FLAT_FILE):
-        return hashes
-    try:
-        with open(FLAT_FILE, "r") as f:
-            for line in f:
-                h = line.strip()
-                if h:
-                    hashes.add(h)
-    except OSError as exc:
-        log.warning("Could not read flat file: %s", exc)
-    return hashes
-
-
-def _dest_path(source_path: str, file_hash: str, clean_title: str, year_or_episode: str) -> str:
+def scan_sources(
+    source_dirs: List[str],
+    conn: sqlite3.Connection,
+    hasher: Callable[[str], str] = compute_hash,
+    classify_fn: Callable[[str], object] = classifier.classify,
+    clean_fn: Callable[[str], str] = classifier.clean_filename,
+) -> ScanResult:
     """
-    Mirror the source directory structure under /dest, but replace the
-    filename with:  <hash>.<Clean Title>.<year_or_episode>.mkv
+    Scan source directories once and insert newly discovered files.
+
+    All dependencies are injected for testability:
+      - conn:        SQLite connection
+      - hasher:      function(path) -> hash string
+      - classify_fn: function(filename) -> DeclaredMetadata
+      - clean_fn:    function(filename) -> cleaned name string
     """
-    rel = os.path.relpath(source_path, SOURCE_DIR)
-    rel_dir = os.path.dirname(rel)
-    label_parts = [file_hash, clean_title]
-    if year_or_episode:
-        label_parts.append(year_or_episode)
-    filename = ".".join(label_parts) + ".mkv"
-    return os.path.join(DEST_DIR, rel_dir, filename)
+    # <telemetry>: startup_scan_started — beginning source directory scan
+    log.info("[startup_flow] event=startup_scan_started source_dirs=%s", source_dirs)
 
+    result = ScanResult()
 
-def _scan_once() -> None:
-    flat_hashes = _load_flat_file()
-    found = 0
+    for source_dir in source_dirs:
+        if not os.path.isdir(source_dir):
+            log.warning("[startup_flow] event=scan_dir_missing dir=%s", source_dir)
+            continue
 
-    for root, _dirs, files in os.walk(SOURCE_DIR):
-        for fname in files:
-            ext = os.path.splitext(fname)[1].lower()
-            if ext not in MEDIA_EXTENSIONS:
-                continue
+        for root, _dirs, files in os.walk(source_dir):
+            for fname in files:
+                ext = os.path.splitext(fname)[1].lower()
+                if ext not in MEDIA_EXTENSIONS:
+                    continue
 
-            path = os.path.join(root, fname)
-            try:
-                file_hash = compute_hash(path)
-            except OSError as exc:
-                log.warning("Cannot hash %s: %s", path, exc)
-                continue
+                path = os.path.join(root, fname)
 
-            # Skip if already in flat file (DONE) or DB
-            if file_hash in flat_hashes:
-                continue
-            if db.get_by_hash(file_hash) is not None:
-                continue
+                # Compute hash + size
+                try:
+                    file_hash = hasher(path)
+                    file_size = os.path.getsize(path)
+                except OSError as exc:
+                    log.warning(
+                        "[startup_flow] event=scan_file_error path=%s error=%s",
+                        path, exc,
+                    )
+                    result.errors += 1
+                    continue
 
-            # New file — classify and enqueue
-            try:
-                media_type, clean_title, year_or_episode = classifier.classify(path)
-            except Exception as exc:  # noqa: BLE001
-                log.warning("Cannot classify %s: %s", path, exc)
-                continue
+                # Check if already in DB by hash + path
+                existing = db.get_entry_by_hash_and_path(conn, file_hash, path)
+                if existing is not None:
+                    result.skipped += 1
+                    continue
 
-            dest_path = _dest_path(path, file_hash, clean_title, year_or_episode)
-            mf = MediaFile.new(
-                file_hash=file_hash,
-                source_path=path,
-                dest_path=dest_path,
-                media_type=media_type,
-                clean_title=clean_title,
-                year_or_episode=year_or_episode,
-            )
-            db.insert_file(mf)
-            found += 1
-            log.info("Enqueued: %s (%s)", clean_title, media_type.value)
+                # Classify filename (defensive — never throws)
+                declared = classify_fn(fname)
 
-    log.info("Scan complete. %d new file(s) enqueued.", found)
+                # Clean the filename for the name column
+                clean_name = clean_fn(fname)
 
+                # Create entry
+                entry = Entry.new(
+                    name=clean_name,
+                    hash=file_hash,
+                    path=path,
+                    size=file_size,
+                )
 
-def run() -> None:
-    """Entry point for the scanner background thread."""
-    log.info("Scanner started. Source: %s", SOURCE_DIR)
-    while not _stop_event.is_set():
-        try:
-            _scan_once()
-        except Exception as exc:  # noqa: BLE001
-            log.exception("Scan error: %s", exc)
-        # Wait for stop, an explicit rescan trigger, or the regular interval
-        _rescan_event.wait(timeout=cfg.rescan_interval)
-        _rescan_event.clear()
-    log.info("Scanner stopped.")
+                # Convert declared metadata to a Metadata row
+                meta = declared.to_metadata(entry.uuid)
 
+                # Insert entry + declared metadata + progress(PENDING)
+                db.insert_new_file(conn, entry, meta)
 
-def start() -> threading.Thread:
-    t = threading.Thread(target=run, name="scanner", daemon=True)
-    t.start()
-    return t
+                # <telemetry>: classifier_result(uuid=<uuid>, declared_fields_parsed=N, fields_unknown=N)
+                log.info(
+                    "[startup_flow] event=classifier_result uuid=%s "
+                    "declared_fields_parsed=%d fields_unknown=%d",
+                    entry.uuid, declared.parsed_field_count, declared.unknown_field_count,
+                )
 
+                result.added += 1
+                log.info(
+                    "[startup_flow] event=file_discovered uuid=%s name=%s size=%d",
+                    entry.uuid, clean_name, file_size,
+                )
 
-def trigger_rescan() -> None:
-    """Wake the scanner immediately without waiting for the next interval."""
-    _rescan_event.set()
+    # <telemetry>: startup_scan_completed(added=N, skipped=N, errors=N)
+    log.info(
+        "[startup_flow] event=startup_scan_completed added=%d skipped=%d errors=%d",
+        result.added, result.skipped, result.errors,
+    )
 
-
-def stop() -> None:
-    _stop_event.set()
+    return result
