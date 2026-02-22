@@ -233,7 +233,7 @@ def test_insert_new_file():
     conn = _in_memory_db()
     e = Entry.new(name="Movie", hash="h1", path="/source/m.mkv", size=100)
     meta = Metadata(uuid=e.uuid, kind=MetadataKind.DECLARED, codec="h264")
-    db.insert_new_file(conn, e, meta)
+    db.insert_new_file(conn, e, [meta])
 
     # Entry exists
     assert db.get_entry_by_uuid(conn, e.uuid) is not None
@@ -243,3 +243,24 @@ def test_insert_new_file():
     p = db.get_progress(conn, e.uuid)
     assert p is not None
     assert p.status == FileStatus.PENDING
+
+
+def test_insert_new_file_multiple_metadata():
+    """insert_new_file should accept both DECLARED and ACTUAL metadata."""
+    conn = _in_memory_db()
+    e = Entry.new(name="Movie", hash="h1", path="/source/m.mkv", size=100)
+    declared = Metadata(uuid=e.uuid, kind=MetadataKind.DECLARED, codec="h264")
+    actual = Metadata(uuid=e.uuid, kind=MetadataKind.ACTUAL, codec="h265", resolution="1920x1080")
+    db.insert_new_file(conn, e, [declared, actual])
+
+    # Both metadata rows should exist
+    all_meta = db.get_all_metadata(conn, e.uuid)
+    assert len(all_meta) == 2
+    kinds = {m.kind for m in all_meta}
+    assert MetadataKind.DECLARED in kinds
+    assert MetadataKind.ACTUAL in kinds
+    # ACTUAL row has correct values
+    actual_meta = db.get_metadata(conn, e.uuid, MetadataKind.ACTUAL)
+    assert actual_meta.codec == "h265"
+    assert actual_meta.resolution == "1920x1080"
+

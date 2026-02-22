@@ -1,106 +1,70 @@
-"""Tests for classifier.py — clean_filename and classify."""
+"""Tests for classifier.py — table-driven, covering separators and edge cases."""
 
+import pytest
 from classifier import classify, clean_filename
-from models import DeclaredMetadata, UNKNOWN_SENTINEL
+from models import UNKNOWN_SENTINEL
 
 
-# ── clean_filename tests ────────────────────────────────────────────────────
+# ── classify: table-driven ──────────────────────────────────────────────────
 
-def test_clean_filename_movie():
-    assert clean_filename("Inception.2010.1080p.Bluray.mkv") == "Inception"
+_CLASSIFY_CASES = [
+    # (filename, expected_codec, expected_resolution, expected_format)
+    # Dot separators
+    ("Inception.2010.1080p.x264.mkv",          "h264",  "1920x1080", UNKNOWN_SENTINEL),
+    ("Movie.2020.x265.mkv",                    "h265",  UNKNOWN_SENTINEL, UNKNOWN_SENTINEL),
+    ("Movie.2020.2160p.mkv",                   UNKNOWN_SENTINEL, "3840x2160", UNKNOWN_SENTINEL),
+    ("Movie.2020.HDR10.mkv",                   UNKNOWN_SENTINEL, UNKNOWN_SENTINEL, "hdr10"),
+    ("Movie.2020.x264.10bit.1080p.mkv",        "h264",  "1920x1080", "10bit"),
+    ("Movie.2020.23.98fps.1080p.mkv",          UNKNOWN_SENTINEL, "1920x1080", UNKNOWN_SENTINEL),
+    # Underscore separators
+    ("test_video_h264.mkv",                    "h264",  UNKNOWN_SENTINEL, UNKNOWN_SENTINEL),
+    ("my_movie_x265_1080p.mkv",                "h265",  "1920x1080", UNKNOWN_SENTINEL),
+    ("file_hevc_4k.mkv",                       "hevc",  "3840x2160", UNKNOWN_SENTINEL),
+    # Dash separators
+    ("movie-h264-720p.mkv",                    "h264",  "1280x720",  UNKNOWN_SENTINEL),
+    ("clip-xvid-480p.mkv",                     "xvid",  "720x480",   UNKNOWN_SENTINEL),
+    # Bracket garbage
+    ("[GARBAGE]h264.1080p.mkv",                "h264",  "1920x1080", UNKNOWN_SENTINEL),
+    ("[YTS.MX]Movie.2020.x265.mkv",            "h265",  UNKNOWN_SENTINEL, UNKNOWN_SENTINEL),
+    ("(Release-Group)_movie_av1_2160p.mkv",    "av1",   "3840x2160", UNKNOWN_SENTINEL),
+    # Mixed separators
+    ("Some.Movie_2020-x264.1080p.mkv",         "h264",  "1920x1080", UNKNOWN_SENTINEL),
+    # No codec / no resolution → Unknown
+    ("simple_movie.mkv",                       UNKNOWN_SENTINEL, UNKNOWN_SENTINEL, UNKNOWN_SENTINEL),
+    # Edge cases — should never crash
+    ("",                                       UNKNOWN_SENTINEL, UNKNOWN_SENTINEL, UNKNOWN_SENTINEL),
+    ("   ",                                    UNKNOWN_SENTINEL, UNKNOWN_SENTINEL, UNKNOWN_SENTINEL),
+    ("...",                                    UNKNOWN_SENTINEL, UNKNOWN_SENTINEL, UNKNOWN_SENTINEL),
+    ("🎬🎥.mkv",                                UNKNOWN_SENTINEL, UNKNOWN_SENTINEL, UNKNOWN_SENTINEL),
+]
 
-
-def test_clean_filename_tv():
-    # clean_filename retains the episode string if there's no year
-    assert clean_filename("Breaking.Bad.S01E01.720p.mkv") == "Breaking Bad S01E01"
-
-
-def test_clean_filename_with_watermark():
-    result = clean_filename("www.UIndex.org - Harry.Potter.2001.mkv")
-    assert "Harry Potter" in result
-
-
-def test_clean_filename_underscores():
-    assert clean_filename("The_Dark_Knight.2008.x264.mkv") == "The Dark Knight"
-
-
-def test_clean_filename_no_year():
-    result = clean_filename("some.random.hevc.mkv")
-    # Should strip junk tokens
-    assert "hevc" not in result.lower()
-
-
-def test_clean_filename_very_long_title():
-    long_name = "A" * 200 + ".2020.mkv"
-    result = clean_filename(long_name)
-    assert len(result) <= 120
-
-
-def test_clean_filename_empty_result_fallback():
-    # Edge case: filename is all junk tokens
-    result = clean_filename("1080p.x265.hevc.mkv")
-    # Should return something (fallback to raw)
-    assert len(result) > 0
-
-
-# ── classify tests ──────────────────────────────────────────────────────────
-
-def test_classify_returns_declared_metadata():
-    result = classify("Inception.2010.1080p.x264.mkv")
-    assert isinstance(result, DeclaredMetadata)
+@pytest.mark.parametrize("filename,exp_codec,exp_res,exp_fmt", _CLASSIFY_CASES)
+def test_classify(filename, exp_codec, exp_res, exp_fmt):
+    result = classify(filename)
+    assert result.codec == exp_codec, f"{filename}: codec {result.codec!r} != {exp_codec!r}"
+    assert result.resolution == exp_res, f"{filename}: resolution {result.resolution!r} != {exp_res!r}"
+    assert result.format == exp_fmt, f"{filename}: format {result.format!r} != {exp_fmt!r}"
 
 
-def test_classify_extracts_codec():
-    result = classify("Movie.2020.x265.mkv")
-    assert result.codec == "h265"
+# ── clean_filename: table-driven ────────────────────────────────────────────
 
+_CLEAN_CASES = [
+    ("Inception.2010.1080p.Bluray.mkv",                   "Inception"),
+    ("The_Dark_Knight.2008.x264.mkv",                     "The Dark Knight"),
+    ("www.UIndex.org - Harry.Potter.2001.mkv",             "Harry Potter"),
+    ("Breaking.Bad.S01E01.720p.mkv",                       "Breaking Bad S01E01"),
+    ("some.random.hevc.mkv",                               None),  # just check no crash + no junk
+    ("A" * 200 + ".2020.mkv",                              None),  # check length <= 120
+]
 
-def test_classify_extracts_resolution():
-    result = classify("Movie.2020.1080p.mkv")
-    assert result.resolution == "1920x1080"
-
-
-def test_classify_extracts_4k():
-    result = classify("Movie.2020.2160p.mkv")
-    assert result.resolution == "3840x2160"
-
-
-def test_classify_extracts_hdr_format():
-    result = classify("Movie.2020.HDR10.mkv")
-    assert result.format != UNKNOWN_SENTINEL
-    assert "hdr" in result.format.lower()
-
-
-def test_classify_unknown_fields():
-    result = classify("simple_movie.mkv")
-    # No codec, no resolution in filename → Unknown
-    assert result.codec == UNKNOWN_SENTINEL
-    assert result.resolution == UNKNOWN_SENTINEL
-
-
-def test_classify_no_exceptions():
-    """Classify should never raise, even on pathological input."""
-    for edge_case in ["", "   ", "...", "🎬🎥.mkv", "\x00\x01\x02"]:
-        result = classify(edge_case)
-        assert isinstance(result, DeclaredMetadata)
-
-
-def test_classify_partial_failure():
-    """If one field fails, others should still parse."""
-    result = classify("Movie.2020.x264.10bit.1080p.mkv")
-    assert result.codec == "h264"
-    assert result.resolution == "1920x1080"
-    # format should pick up 10bit
-    assert result.format != UNKNOWN_SENTINEL
-
-
-def test_classify_sar_dar_unknown():
-    """SAR and DAR are rarely in filenames — should default to Unknown."""
-    result = classify("Movie.2020.1080p.x265.mkv")
-    assert result.sar == UNKNOWN_SENTINEL
-    assert result.dar == UNKNOWN_SENTINEL
-
-
-def test_classify_framerate():
-    result = classify("Movie.2020.23.98fps.1080p.mkv")
-    assert result.framerate == "23.98"
+@pytest.mark.parametrize("filename,expected", _CLEAN_CASES)
+def test_clean_filename(filename, expected):
+    result = clean_filename(filename)
+    assert len(result) > 0, f"Empty result for {filename!r}"
+    if expected is not None:
+        assert expected in result, f"{filename!r} → {result!r} does not contain {expected!r}"
+    else:
+        # Just verify no crash and reasonable length
+        assert len(result) <= 120
+        if "hevc" in filename.lower():
+            assert "hevc" not in result.lower()

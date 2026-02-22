@@ -19,6 +19,7 @@ from typing import Callable, List
 
 import classifier
 import db
+import prober
 from hash import compute_hash
 from models import Entry
 
@@ -40,6 +41,7 @@ def scan_sources(
     hasher: Callable[[str], str] = compute_hash,
     classify_fn: Callable[[str], object] = classifier.classify,
     clean_fn: Callable[[str], str] = classifier.clean_filename,
+    probe_fn: Callable[[str, str], object] = prober.extract_actual_metadata,
 ) -> ScanResult:
     """
     Scan source directories once and insert newly discovered files.
@@ -49,6 +51,7 @@ def scan_sources(
       - hasher:      function(path) -> hash string
       - classify_fn: function(filename) -> DeclaredMetadata
       - clean_fn:    function(filename) -> cleaned name string
+      - probe_fn:    function(uuid, path) -> Metadata (ACTUAL)
     """
     # <telemetry>: startup_scan_started — beginning source directory scan
     log.info("[startup_flow] event=startup_scan_started source_dirs=%s", source_dirs)
@@ -101,16 +104,20 @@ def scan_sources(
                 )
 
                 # Convert declared metadata to a Metadata row
-                meta = declared.to_metadata(entry.uuid)
+                meta_declared = declared.to_metadata(entry.uuid)
 
-                # Insert entry + declared metadata + progress(PENDING)
-                db.insert_new_file(conn, entry, meta)
+                # Execute prober for ACTUAL metadata
+                meta_actual = probe_fn(entry.uuid, path)
+
+                # Insert entry + both metadata blocks + progress(PENDING)
+                db.insert_new_file(conn, entry, [meta_declared, meta_actual])
 
                 # <telemetry>: classifier_result(uuid=<uuid>, declared_fields_parsed=N, fields_unknown=N)
                 log.info(
                     "[startup_flow] event=classifier_result uuid=%s "
-                    "declared_fields_parsed=%d fields_unknown=%d",
+                    "declared_fields_parsed=%d fields_unknown=%d actual_codec=%s",
                     entry.uuid, declared.parsed_field_count, declared.unknown_field_count,
+                    meta_actual.codec,
                 )
 
                 result.added += 1

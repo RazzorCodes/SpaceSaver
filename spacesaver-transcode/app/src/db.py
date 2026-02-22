@@ -355,25 +355,26 @@ def count_by_status(conn: sqlite3.Connection) -> Dict[str, int]:
 
 # ── Composite insert (convenience) ──────────────────────────────────────────
 
-def insert_new_file(conn: sqlite3.Connection, entry: Entry, declared_meta: Metadata) -> None:
+def insert_new_file(conn: sqlite3.Connection, entry: Entry, metadatas: List[Metadata]) -> None:
     """
-    Insert a new file: entry row + declared metadata row + progress row (PENDING).
-    All three in a single transaction.
+    Insert a new file: entry row + metadata rows + progress row (PENDING).
+    All in a single transaction.
     """
-    extra_json = json.dumps(declared_meta.extra) if isinstance(declared_meta.extra, dict) else declared_meta.extra
     with _lock:
         conn.execute(
             "INSERT OR IGNORE INTO entries (uuid, name, hash, path, size) VALUES (?, ?, ?, ?, ?)",
             (entry.uuid, entry.name, entry.hash, entry.path, entry.size),
         )
-        conn.execute(
-            """INSERT OR REPLACE INTO metadata
-               (uuid, kind, codec, format, sar, dar, resolution, framerate, extra)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (declared_meta.uuid, declared_meta.kind.value, declared_meta.codec,
-             declared_meta.format, declared_meta.sar, declared_meta.dar,
-             declared_meta.resolution, declared_meta.framerate, extra_json),
-        )
+        for meta in metadatas:
+            extra_json = json.dumps(meta.extra) if isinstance(meta.extra, dict) else meta.extra
+            conn.execute(
+                """INSERT OR REPLACE INTO metadata
+                   (uuid, kind, codec, format, sar, dar, resolution, framerate, extra)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (meta.uuid, meta.kind.value, meta.codec,
+                 meta.format, meta.sar, meta.dar,
+                 meta.resolution, meta.framerate, extra_json),
+            )
         conn.execute(
             """INSERT OR IGNORE INTO progress
                (uuid, status, progress, frame_current, frame_total, workfile)

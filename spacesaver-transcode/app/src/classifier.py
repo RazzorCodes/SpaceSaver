@@ -35,30 +35,34 @@ _SEASON_LABEL_RE = re.compile(r"[Ss]eason[\s._-]*(\d{1,2})", re.IGNORECASE)
 # Year: 4-digit number in the 1900s or 2000s
 _YEAR_RE = re.compile(r"\b(19|20)\d{2}\b")
 
+# Custom word boundary — treats underscores, dots, dashes, brackets as separators
+_B = r"(?<![a-zA-Z0-9])"
+_E = r"(?![a-zA-Z0-9])"
+
 # Resolution patterns
 _RESOLUTION_RE = re.compile(
-    r"\b(2160p|1080p|1080i|720p|576p|480p|4[Kk]|[Uu][Hh][Dd])\b",
+    _B + r"(2160p|1080p|1080i|720p|576p|480p|4[Kk]|[Uu][Hh][Dd])" + _E,
     re.IGNORECASE,
 )
 
 # Codec patterns from filename
 _CODEC_RE = re.compile(
-    r"\b(hevc|x265|x264|h\.?264|h\.?265|avc|xvid|divx|av1|vp9|vp8)\b",
+    _B + r"(hevc|x265|x264|h\.?264|h\.?265|avc|xvid|divx|av1|vp9|vp8)" + _E,
     re.IGNORECASE,
 )
 
 # Format / pixel format indicators
 _FORMAT_RE = re.compile(
-    r"\b(10[._-]?bit|10bit|8bit|12bit|hdr|hdr10|hdr10\+|dv|dolby[\._\s]?vision|hlg)\b",
+    _B + r"(10[._-]?bit|10bit|8bit|12bit|hdr|hdr10|hdr10\+|dv|dolby[\._\s]?vision|hlg)" + _E,
     re.IGNORECASE,
 )
 
 # SAR/DAR patterns (unlikely in filenames but defensive)
-_DAR_RE = re.compile(r"\b(\d+:\d+)\b")
+_DAR_RE = re.compile(_B + r"(\d+:\d+)" + _E)
 
 # Framerate patterns
 _FRAMERATE_RE = re.compile(
-    r"\b(\d{2}(?:\.\d{1,2})?)\s*fps\b",
+    _B + r"(\d{2}(?:\.\d{1,2})?)\s*fps" + _E,
     re.IGNORECASE,
 )
 

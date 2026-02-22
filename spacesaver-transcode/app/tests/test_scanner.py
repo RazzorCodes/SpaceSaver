@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 import sqlite3
 
 import db
-from models import DeclaredMetadata, Entry, FileStatus, MetadataKind
+from models import DeclaredMetadata, Entry, FileStatus, Metadata, MetadataKind
 from scanner import ScanResult, scan_sources
 
 
@@ -19,11 +19,16 @@ def _in_memory_db() -> sqlite3.Connection:
     return conn
 
 
+def _dummy_probe(uuid: str, path: str) -> Metadata:
+    """A stub prober for tests — returns an ACTUAL metadata row with defaults."""
+    return Metadata(uuid=uuid, kind=MetadataKind.ACTUAL)
+
+
 def test_scan_empty_dir():
     """Scanning an empty directory should add nothing."""
     with tempfile.TemporaryDirectory() as tmpdir:
         conn = _in_memory_db()
-        result = scan_sources([tmpdir], conn)
+        result = scan_sources([tmpdir], conn, probe_fn=_dummy_probe)
         assert result.added == 0
         assert result.skipped == 0
         assert result.errors == 0
@@ -45,6 +50,7 @@ def test_scan_discovers_files():
             hasher=lambda p: f"hash_{os.path.basename(p)}",
             classify_fn=lambda f: DeclaredMetadata(codec="h264"),
             clean_fn=lambda f: os.path.splitext(f)[0].replace(".", " ").title(),
+            probe_fn=_dummy_probe,
         )
 
         # Should discover 2 media files (.mkv and .mp4), skip .txt
@@ -54,6 +60,44 @@ def test_scan_discovers_files():
 
         entries = db.list_entries(conn)
         assert len(entries) == 2
+
+
+def test_scan_inserts_actual_metadata():
+    """Scanner should insert both DECLARED and ACTUAL metadata rows."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = os.path.join(tmpdir, "movie.mkv")
+        with open(path, "wb") as f:
+            f.write(b"x" * 1024)
+
+        conn = _in_memory_db()
+
+        def custom_probe(uuid, p):
+            return Metadata(uuid=uuid, kind=MetadataKind.ACTUAL, codec="hevc", resolution="1920x1080")
+
+        result = scan_sources(
+            [tmpdir],
+            conn,
+            hasher=lambda p: "hash1",
+            classify_fn=lambda f: DeclaredMetadata(codec="h264"),
+            clean_fn=lambda f: "Movie",
+            probe_fn=custom_probe,
+        )
+
+        assert result.added == 1
+        entries = db.list_entries(conn)
+        uuid = entries[0].uuid
+
+        # Both metadata kinds should exist
+        all_meta = db.get_all_metadata(conn, uuid)
+        assert len(all_meta) == 2
+        kinds = {m.kind for m in all_meta}
+        assert MetadataKind.DECLARED in kinds
+        assert MetadataKind.ACTUAL in kinds
+
+        # ACTUAL metadata should have the probed values
+        actual = db.get_metadata(conn, uuid, MetadataKind.ACTUAL)
+        assert actual.codec == "hevc"
+        assert actual.resolution == "1920x1080"
 
 
 def test_scan_skips_existing():
@@ -68,9 +112,8 @@ def test_scan_skips_existing():
 
         # Pre-insert the file
         e = Entry.new(name="Movie", hash=fake_hash, path=path, size=1024)
-        from models import Metadata
         meta = Metadata(uuid=e.uuid, kind=MetadataKind.DECLARED, codec="h264")
-        db.insert_new_file(conn, e, meta)
+        db.insert_new_file(conn, e, [meta])
 
         result = scan_sources(
             [tmpdir],
@@ -78,6 +121,7 @@ def test_scan_skips_existing():
             hasher=lambda p: fake_hash,
             classify_fn=lambda f: DeclaredMetadata(codec="h264"),
             clean_fn=lambda f: "Movie",
+            probe_fn=_dummy_probe,
         )
 
         assert result.added == 0
@@ -102,6 +146,7 @@ def test_scan_counts_errors():
             hasher=failing_hasher,
             classify_fn=lambda f: DeclaredMetadata(),
             clean_fn=lambda f: "Movie",
+            probe_fn=_dummy_probe,
         )
 
         assert result.errors == 1
@@ -111,7 +156,7 @@ def test_scan_counts_errors():
 def test_scan_nonexistent_dir():
     """Scanning a nonexistent directory should not error but log a warning."""
     conn = _in_memory_db()
-    result = scan_sources(["/nonexistent/dir"], conn)
+    result = scan_sources(["/nonexistent/dir"], conn, probe_fn=_dummy_probe)
     assert result.added == 0
 
 
@@ -131,6 +176,7 @@ def test_scan_nested_dirs():
             hasher=lambda p: f"hash_{os.path.basename(p)}",
             classify_fn=lambda f: DeclaredMetadata(),
             clean_fn=lambda f: os.path.splitext(f)[0],
+            probe_fn=_dummy_probe,
         )
 
         assert result.added == 2
