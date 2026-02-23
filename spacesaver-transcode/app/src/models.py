@@ -6,7 +6,6 @@ Three normalised tables: entries, metadata, progress.
 
 from __future__ import annotations
 
-import json
 import uuid as _uuid
 from dataclasses import dataclass, field
 from enum import Enum

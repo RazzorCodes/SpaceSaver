@@ -6,8 +6,7 @@ podman run -d \
   --replace \
   --network=host \
   --security-opt label=disable \
-  -v /mnt/nas-slow/media:/source:ro \
-  -v /mnt/nas-slow/media:/dest:rw \
+  -v /mnt/nas-slow/media:/media:rw \
   -v /tmp/spacesaver-workdir:/workdir:rw \
   -e TV_CRF=18 \
   -e MOVIE_CRF=16 \

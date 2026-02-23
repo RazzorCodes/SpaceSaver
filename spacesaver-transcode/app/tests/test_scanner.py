@@ -2,13 +2,12 @@
 
 import os
 import tempfile
-from unittest.mock import MagicMock
 
 import sqlite3
 
 import db
-from models import DeclaredMetadata, Entry, FileStatus, Metadata, MetadataKind
-from scanner import ScanResult, scan_sources
+from models import DeclaredMetadata, Entry, Metadata, MetadataKind
+from scanner import scan_sources
 
 
 def _in_memory_db() -> sqlite3.Connection:

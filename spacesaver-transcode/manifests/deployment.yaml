@@ -45,11 +45,9 @@ spec:
 
           # ── Volume mounts ──
           volumeMounts:
-            - name: source
-              mountPath: /source
+            - name: media
+              mountPath: /media
               readOnly: false
-            - name: dest
-              mountPath: /dest
             - name: workdir
               mountPath: /workdir
 
@@ -69,14 +67,8 @@ spec:
             failureThreshold: 5
 
       volumes:
-        # Source media library — mapped directly to NFS
-        - name: source
-          nfs:
-            server: nas.lan
-            path: /slow/media
-
-        # Output library, SQLite DB, progress files, and flat tracking file
-        - name: dest
+        # Source/Dest media library — mapped directly to NFS for in-place transcoding
+        - name: media
           nfs:
             server: nas.lan
             path: /slow/media

@@ -2,7 +2,7 @@
 #
 # PURPOSE:
 #   The transcoder writes in-progress encode output to /workdir/<uuid>.mkv
-#   before moving the file to /dest on success. This avoids partial files
+#   before moving the file to /media on success. This avoids partial files
 #   ever appearing in the final library.
 #
 # STORAGE REQUIREMENTS:

@@ -14,7 +14,6 @@ setting a file's status to QUEUED.
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import shutil
@@ -28,12 +27,11 @@ import ffmpeg
 
 import db
 from config import cfg
-from models import Entry, FileStatus, Progress
+from models import Entry, FileStatus
 
 log = logging.getLogger(__name__)
 
 WORKDIR = "/workdir"
-DEST_DIR = "/dest"
 
 # Audio codecs considered lossless / uncompressed → need re-encoding
 _LOSSLESS_CODECS = {
@@ -146,6 +144,13 @@ def _should_skip(entry: Entry, streams: list, probe: dict) -> Tuple[bool, str]:
     Returns (skip: bool, reason: str).
     """
     video_streams = [s for s in streams if s.get("codec_type") == "video"]
+
+    # 0. Source exceeds resolution cap → must transcode to downscale
+    res_cap = _effective_res_cap(entry)
+    if res_cap > 0:
+        max_height = max((s.get("height", 0) for s in video_streams), default=0)
+        if max_height > res_cap:
+            return False, ""
 
     # 1. Source is already HEVC
     for vs in video_streams:
@@ -333,16 +338,10 @@ def _encode(conn: sqlite3.Connection, entry: Entry, streams: list) -> None:
 # ── File processing ──────────────────────────────────────────────────────────
 
 def _dest_path_for(entry: Entry) -> str:
-    """Build a destination path under /dest mirroring the source structure."""
-    # Use the source path relative to any /source prefix
-    source_dir = "/source"
-    if entry.path.startswith(source_dir):
-        rel = os.path.relpath(entry.path, source_dir)
-    else:
-        rel = os.path.basename(entry.path)
-    rel_dir = os.path.dirname(rel)
+    """Build a destination path in the same directory as the source."""
+    src_dir = os.path.dirname(entry.path)
     filename = f"{entry.hash}.{entry.name}.mkv"
-    return os.path.join(DEST_DIR, rel_dir, filename)
+    return os.path.join(src_dir, filename)
 
 
 def _cleanup_workdir(uuid: str) -> None:

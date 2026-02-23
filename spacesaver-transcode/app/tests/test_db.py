@@ -65,7 +65,7 @@ def test_validate_schema_mismatch():
 
 def test_insert_and_get_entry():
     conn = _in_memory_db()
-    e = Entry.new(name="Test Movie", hash="abc123", path="/source/test.mkv", size=1000)
+    e = Entry.new(name="Test Movie", hash="abc123", path="/media/test.mkv", size=1000)
     db.insert_entry(conn, e)
     result = db.get_entry_by_uuid(conn, e.uuid)
     assert result is not None
@@ -76,9 +76,9 @@ def test_insert_and_get_entry():
 
 def test_get_entry_by_hash_and_path():
     conn = _in_memory_db()
-    e = Entry.new(name="Movie", hash="xyz", path="/source/movie.mkv", size=500)
+    e = Entry.new(name="Movie", hash="xyz", path="/media/movie.mkv", size=500)
     db.insert_entry(conn, e)
-    result = db.get_entry_by_hash_and_path(conn, "xyz", "/source/movie.mkv")
+    result = db.get_entry_by_hash_and_path(conn, "xyz", "/media/movie.mkv")
     assert result is not None
     assert result.uuid == e.uuid
 
@@ -90,8 +90,8 @@ def test_get_entry_not_found():
 
 def test_list_entries():
     conn = _in_memory_db()
-    e1 = Entry.new(name="Movie 1", hash="h1", path="/source/m1.mkv", size=100)
-    e2 = Entry.new(name="Movie 2", hash="h2", path="/source/m2.mkv", size=200)
+    e1 = Entry.new(name="Movie 1", hash="h1", path="/media/m1.mkv", size=100)
+    e2 = Entry.new(name="Movie 2", hash="h2", path="/media/m2.mkv", size=200)
     db.insert_entry(conn, e1)
     db.insert_entry(conn, e2)
     entries = db.list_entries(conn)
@@ -102,7 +102,7 @@ def test_list_entries():
 
 def test_insert_and_get_metadata():
     conn = _in_memory_db()
-    e = Entry.new(name="Movie", hash="h1", path="/source/m.mkv", size=100)
+    e = Entry.new(name="Movie", hash="h1", path="/media/m.mkv", size=100)
     db.insert_entry(conn, e)
     meta = Metadata(uuid=e.uuid, kind=MetadataKind.DECLARED, codec="h264", resolution="1920x1080")
     db.insert_metadata(conn, meta)
@@ -114,7 +114,7 @@ def test_insert_and_get_metadata():
 
 def test_get_all_metadata():
     conn = _in_memory_db()
-    e = Entry.new(name="Movie", hash="h1", path="/source/m.mkv", size=100)
+    e = Entry.new(name="Movie", hash="h1", path="/media/m.mkv", size=100)
     db.insert_entry(conn, e)
     m1 = Metadata(uuid=e.uuid, kind=MetadataKind.DECLARED, codec="h264")
     m2 = Metadata(uuid=e.uuid, kind=MetadataKind.ACTUAL, codec="h265")
@@ -128,7 +128,7 @@ def test_get_all_metadata():
 
 def test_insert_and_get_progress():
     conn = _in_memory_db()
-    e = Entry.new(name="Movie", hash="h1", path="/source/m.mkv", size=100)
+    e = Entry.new(name="Movie", hash="h1", path="/media/m.mkv", size=100)
     db.insert_entry(conn, e)
     p = Progress(uuid=e.uuid)
     db.insert_progress(conn, p)
@@ -140,7 +140,7 @@ def test_insert_and_get_progress():
 
 def test_set_status():
     conn = _in_memory_db()
-    e = Entry.new(name="Movie", hash="h1", path="/source/m.mkv", size=100)
+    e = Entry.new(name="Movie", hash="h1", path="/media/m.mkv", size=100)
     db.insert_entry(conn, e)
     db.insert_progress(conn, Progress(uuid=e.uuid))
     db.set_status(conn, e.uuid, FileStatus.QUEUED)
@@ -150,7 +150,7 @@ def test_set_status():
 
 def test_update_progress_fields():
     conn = _in_memory_db()
-    e = Entry.new(name="Movie", hash="h1", path="/source/m.mkv", size=100)
+    e = Entry.new(name="Movie", hash="h1", path="/media/m.mkv", size=100)
     db.insert_entry(conn, e)
     db.insert_progress(conn, Progress(uuid=e.uuid))
     db.update_progress(conn, e.uuid, progress=50.0, frame_current=500, frame_total=1000)
@@ -166,7 +166,7 @@ def test_query_best_candidate():
     conn = _in_memory_db()
     # Insert 3 entries with different sizes
     for name, hash_, size in [("Small", "h1", 100), ("Big", "h2", 9000), ("Medium", "h3", 500)]:
-        e = Entry.new(name=name, hash=hash_, path=f"/source/{name}.mkv", size=size)
+        e = Entry.new(name=name, hash=hash_, path=f"/media/{name}.mkv", size=size)
         db.insert_entry(conn, e)
         db.insert_progress(conn, Progress(uuid=e.uuid, status=FileStatus.PENDING))
 
@@ -178,8 +178,8 @@ def test_query_best_candidate():
 
 def test_query_best_candidate_skips_non_pending():
     conn = _in_memory_db()
-    e1 = Entry.new(name="Done", hash="h1", path="/source/d.mkv", size=9000)
-    e2 = Entry.new(name="Pending", hash="h2", path="/source/p.mkv", size=100)
+    e1 = Entry.new(name="Done", hash="h1", path="/media/d.mkv", size=9000)
+    e2 = Entry.new(name="Pending", hash="h2", path="/media/p.mkv", size=100)
     db.insert_entry(conn, e1)
     db.insert_entry(conn, e2)
     db.insert_progress(conn, Progress(uuid=e1.uuid, status=FileStatus.DONE))
@@ -197,7 +197,7 @@ def test_query_best_candidate_none():
 
 def test_has_active_queue_false():
     conn = _in_memory_db()
-    e = Entry.new(name="Movie", hash="h1", path="/source/m.mkv", size=100)
+    e = Entry.new(name="Movie", hash="h1", path="/media/m.mkv", size=100)
     db.insert_entry(conn, e)
     db.insert_progress(conn, Progress(uuid=e.uuid, status=FileStatus.PENDING))
     assert db.has_active_queue(conn) is False
@@ -205,7 +205,7 @@ def test_has_active_queue_false():
 
 def test_has_active_queue_true():
     conn = _in_memory_db()
-    e = Entry.new(name="Movie", hash="h1", path="/source/m.mkv", size=100)
+    e = Entry.new(name="Movie", hash="h1", path="/media/m.mkv", size=100)
     db.insert_entry(conn, e)
     db.insert_progress(conn, Progress(uuid=e.uuid, status=FileStatus.QUEUED))
     assert db.has_active_queue(conn) is True
@@ -218,7 +218,7 @@ def test_count_by_status():
         ("B", "h2", FileStatus.PENDING),
         ("C", "h3", FileStatus.DONE),
     ]:
-        e = Entry.new(name=name, hash=hash_, path=f"/source/{name}.mkv", size=100)
+        e = Entry.new(name=name, hash=hash_, path=f"/media/{name}.mkv", size=100)
         db.insert_entry(conn, e)
         db.insert_progress(conn, Progress(uuid=e.uuid, status=status))
 
@@ -231,7 +231,7 @@ def test_count_by_status():
 
 def test_insert_new_file():
     conn = _in_memory_db()
-    e = Entry.new(name="Movie", hash="h1", path="/source/m.mkv", size=100)
+    e = Entry.new(name="Movie", hash="h1", path="/media/m.mkv", size=100)
     meta = Metadata(uuid=e.uuid, kind=MetadataKind.DECLARED, codec="h264")
     db.insert_new_file(conn, e, [meta])
 
@@ -248,7 +248,7 @@ def test_insert_new_file():
 def test_insert_new_file_multiple_metadata():
     """insert_new_file should accept both DECLARED and ACTUAL metadata."""
     conn = _in_memory_db()
-    e = Entry.new(name="Movie", hash="h1", path="/source/m.mkv", size=100)
+    e = Entry.new(name="Movie", hash="h1", path="/media/m.mkv", size=100)
     declared = Metadata(uuid=e.uuid, kind=MetadataKind.DECLARED, codec="h264")
     actual = Metadata(uuid=e.uuid, kind=MetadataKind.ACTUAL, codec="h265", resolution="1920x1080")
     db.insert_new_file(conn, e, [declared, actual])

@@ -12,53 +12,47 @@ if [ -z "$ACTION" ]; then
     exit 1
 fi
 
-TEST_DATA_DIR="../../test-data/spacesaver-transcode/source"
+TEST_DATA="../../test-data/spacesaver-transcode"
+SOURCE_DIR="$TEST_DATA/source"
+MEDIA_DIR_REL="$TEST_DATA/media"
 TEST_VIDEO_NAME="test_video_h264.mkv"
 
-function generate_test_data() {
-    mkdir -p "$TEST_DATA_DIR"
+export WORKDIR_DIR="$(pwd)/workdir"
+export MEDIA_DIR="$(cd "$(dirname "$MEDIA_DIR_REL")" && pwd)/$(basename "$MEDIA_DIR_REL")"
+COMPOSE_CMD="podman-compose -f ../containerfile/container-compose.yml"
 
-    if [ ! -f "$TEST_DATA_DIR/$TEST_VIDEO_NAME" ]; then
-        echo "No test mkv found in test-data. Generating a dummy 5-second h264 video..."
-        ffmpeg -f lavfi -i testsrc=duration=5:size=640x360:rate=24 \
+function prepare_media() {
+    rm -rf "$MEDIA_DIR_REL"
+    mkdir -p "$MEDIA_DIR_REL"
+
+    if [ -f "$SOURCE_DIR/$TEST_VIDEO_NAME" ]; then
+        echo "Copying test video from source into media..."
+        cp "$SOURCE_DIR/$TEST_VIDEO_NAME" "$MEDIA_DIR_REL/$TEST_VIDEO_NAME"
+    else
+        echo "No source video found. Generating a dummy 5-second 4K h264 video..."
+        ffmpeg -f lavfi -i testsrc=duration=5:size=3840x2160:rate=24 \
             -c:v libopenh264 \
-            "$TEST_DATA_DIR/$TEST_VIDEO_NAME" -y
+            "$MEDIA_DIR_REL/$TEST_VIDEO_NAME" -y
     fi
 }
 
 function do_up() {
     echo "=== Bringing up container ==="
     # Clean up first to ensure idempotent state
-    podman compose down -v || true
-    rm -rf source dest workdir
-    mkdir -p dest workdir
+    $COMPOSE_CMD down -v || true
+    rm -rf workdir
+    mkdir -p workdir
 
-    generate_test_data
-
-    # Create an ephemeral copy so the original test-data is never touched
-    E2E_SOURCE=$(mktemp -d --tmpdir spacesaver-e2e-source.XXXXXX)
-    echo "Ephemeral source dir: $E2E_SOURCE"
-    cp "$TEST_DATA_DIR/$TEST_VIDEO_NAME" "$E2E_SOURCE/"
-
-    # Symlink so ompose finds ./source
-    ln -sfn "$E2E_SOURCE" source
+    prepare_media
 
     echo "Starting container..."
-    podman compose up -d --build
+    $COMPOSE_CMD up -d --build
 }
 
 function do_down() {
     echo "=== Tearing down container ==="
-    podman compose down -v -t 1 || true
-    # Clean up symlink and ephemeral source
-    if [ -L source ]; then
-        REAL_SOURCE=$(readlink -f source)
-        rm -f source
-        rm -rf "$REAL_SOURCE"
-    else
-        rm -rf source
-    fi
-    rm -rf dest workdir
+    $COMPOSE_CMD down -v -t 1 || true
+    rm -rf "$MEDIA_DIR_REL" workdir
 }
 
 function run_whitebox() {
@@ -75,7 +69,7 @@ function run_whitebox() {
 }
 
 function dump_logs() {
-    local LOG_DIR="$TEST_DATA_DIR/../logs"
+    local LOG_DIR="../../test-data/spacesaver-transcode/logs"
     mkdir -p "$LOG_DIR"
     local TIMESTAMP
     TIMESTAMP=$(date +%Y%m%d_%H%M%S)

@@ -8,9 +8,8 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - ./source:/source:rw,z
-      - ./dest:/dest:z
-      - ./workdir:/workdir:z
+      - ${WORKDIR_DIR:-../../test-data/spacesaver-transcode/workdir}:/workdir:rw,z
+      - ${MEDIA_DIR:-../../test-data/spacesaver-transcode/media}:/media:rw,z
     environment:
       - TV_CRF=23
       - MOVIE_CRF=23

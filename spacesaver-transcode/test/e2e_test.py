@@ -49,8 +49,8 @@ def wait_for_transcoding(uuid):
             status = target_file.get("status", "unknown")
             print(f"Status: {status} progress={target_file.get('progress')}%")
             if status in ["done", "optimum"]:
-                print(f"Finished with status {status}!")            
-            return status
+                print(f"Finished with status {status}!")
+                return status
         except requests.ConnectionError:
             print("Connection error while waiting...")
         time.sleep(2)
@@ -58,40 +58,40 @@ def wait_for_transcoding(uuid):
     return None
 
 def check_output_exists():
-    """Verify that a transcoded output file was written to ./dest/."""
-    dest_dir = os.path.join(os.path.dirname(__file__), "dest")
+    """Verify that a transcoded output file was written to test-data media."""
+    dest_dir = os.path.join(os.path.dirname(__file__), "..", "..", "test-data", "spacesaver-transcode", "media")
     if not os.path.isdir(dest_dir):
-        print(f"WARN: dest dir does not exist: {dest_dir}")
+        print(f"WARN: media dir does not exist: {dest_dir}")
         return False
 
-    mkv_files = [f for f in os.listdir(dest_dir) if f.endswith(".mkv")]
+    [f for f in os.listdir(dest_dir) if f.endswith(".mkv")]
     # Also check subdirectories
     for root, _dirs, files in os.walk(dest_dir):
         for f in files:
-            if f.endswith(".mkv"):
+            if f.endswith(".mkv") and f != "test_video_h264.mkv":
                 full = os.path.join(root, f)
                 size = os.path.getsize(full)
                 print(f"Found output: {full} ({size} bytes)")
                 return True
 
-    print("No .mkv output files found in dest/")
+    print("No .mkv output files found in media/")
     return False
 
 def check_source_consumed():
     """Verify the source file was consumed (deleted) by the transcoder."""
-    source_dir = os.path.join(os.path.dirname(__file__), "source")
+    source_dir = os.path.join(os.path.dirname(__file__), "..", "..", "test-data", "spacesaver-transcode", "media")
     if not os.path.exists(source_dir):
         print("Source dir does not exist (already cleaned up) — OK")
         return True
 
     # Resolve symlink
     real_source = os.path.realpath(source_dir)
-    mkv_files = [f for f in os.listdir(real_source) if f.endswith(".mkv")]
-    if len(mkv_files) == 0:
+    source_files = os.listdir(real_source)
+    if "test_video_h264.mkv" not in source_files:
         print("Source file was consumed (deleted) by the transcoder — OK")
         return True
     else:
-        print(f"Source file(s) still present: {mkv_files}")
+        print(f"Source file test_video_h264.mkv still present!")
         # Fatal error — source is mounted :rw so delete should succeed
         return False
 
@@ -108,12 +108,11 @@ if __name__ == "__main__":
         exit(1)
 
     if final_status == "done":
-        # Verify output was written
+        # Verify output was written and source was consumed
         assert check_output_exists(), "Transcode reported done but no output file found!"
+        assert check_source_consumed(), "Transcode reported done but source file still present!"
     elif final_status == "optimum":
         print("File was already optimal, skipped transcode (no output expected).")
-
-    assert check_source_consumed()
 
     print("E2E Test Passed successfully.")
     exit(0)

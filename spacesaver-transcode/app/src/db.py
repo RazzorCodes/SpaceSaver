@@ -1,7 +1,7 @@
 """
 db.py — SQLite persistence layer for SpaceSaver (database-first architecture).
 
-Database location: /dest/.transcoder/state.db
+Database location: /media/.transcoder/state.db
 Normalised schema: entries, metadata, progress.
 Schema validation on startup: drop-and-recreate if mismatch.
 All operations are thread-safe via a module-level lock.
@@ -17,7 +17,6 @@ import threading
 from typing import Dict, List, Optional
 
 from models import (
-    DeclaredMetadata,
     Entry,
     FileStatus,
     Metadata,
@@ -27,7 +26,7 @@ from models import (
 
 log = logging.getLogger(__name__)
 
-DB_DIR = "/dest/.transcoder"
+DB_DIR = "/media/.transcoder"
 DB_PATH = os.path.join(DB_DIR, "state.db")
 
 _lock = threading.Lock()

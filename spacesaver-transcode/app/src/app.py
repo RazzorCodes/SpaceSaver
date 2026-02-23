@@ -29,7 +29,7 @@ _started = False
 _startup_lock = threading.Lock()
 _conn = None
 
-SOURCE_DIRS = ["/source"]
+MEDIA_DIRS = ["/media"]
 
 
 def _ensure_started() -> None:
@@ -41,7 +41,7 @@ def _ensure_started() -> None:
             return
         _started = True
         _conn = db.init_db()
-        result = scanner.scan_sources(SOURCE_DIRS, _conn)
+        result = scanner.scan_sources(MEDIA_DIRS, _conn)
         log.info("Startup scan: added=%d skipped=%d errors=%d", result.added, result.skipped, result.errors)
         transcoder.start(_conn)
         log.info("SpaceSaver started.")
