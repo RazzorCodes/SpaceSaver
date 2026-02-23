@@ -49,10 +49,6 @@ if [ -z "$NEW_VERSION" ]; then
     echo "$NEW_VERSION" > "$VERSION_FILE"
 else
     echo "Using manual version: $NEW_VERSION"
-    # Optional: Update version file anyway? The request says "use string as version instead", 
-    # but "do not autoincrement". It doesn't explicitly say whether to update version.txt.
-    # Usually, it's good to keep it in sync.
-    echo "$NEW_VERSION" > "$VERSION_FILE"
 fi
 
 # ── Build ─────────────────────────────────────────────────────────────────────

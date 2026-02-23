@@ -92,6 +92,10 @@ kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -
 echo "==> Applying kustomization (image tag: ${DEPLOY_TAG})…"
 kubectl apply -k "$MANIFESTS_DIR"
 
+echo "==> Forcing rollout restart..."
+kubectl -n "$NAMESPACE" rollout restart deployment/spacesaver
+kubectl -n "$NAMESPACE" rollout status deployment/spacesaver
+
 echo ""
 echo "==> Deployed. Checking pod status:"
 kubectl -n "$NAMESPACE" get pods,pvc,svc -l app=spacesaver
