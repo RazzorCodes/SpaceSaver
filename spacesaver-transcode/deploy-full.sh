@@ -38,6 +38,7 @@ IMAGE_TAG=$(cat "$SCRIPT_DIR/app/version.txt" | tr -d '[:space:]')
 DELETE=false
 for arg in "$@"; do
   [[ "$arg" == "--delete" ]] && DELETE=true
+  [[ "$arg" == "--latest" ]] && IMAGE_TAG="latest"
 done
 
 # ── Tear-down ─────────────────────────────────────────────────────────────────
