@@ -1,2 +1,0 @@
-flask>=3.0
-ffmpeg-python>=0.2

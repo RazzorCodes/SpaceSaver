@@ -1,1 +1,6 @@
-pytest
+flask>=3.0
+ffmpeg-python>=0.2
+sqlmodel
+fastapi
+sqlalchemy
+colorlog
