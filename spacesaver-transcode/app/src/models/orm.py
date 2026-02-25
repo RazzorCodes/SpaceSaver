@@ -41,7 +41,8 @@ class ResolutionDecorator(TypeDecorator[tuple[int, int]]):
 
 
 class Items(SQLModel, table=True):
-    id: int | None = Field(default=None, primary_key=True)
+    id: int = Field(default=None, primary_key=True)
+    hash: str
     name: str
     path: str
     status: WorkItemStatus = Field(default=WorkItemStatus.UNKNOWN)
@@ -51,19 +52,19 @@ class Items(SQLModel, table=True):
 
 
 class Metadata(SQLModel, table=True):
-    id: int = Field(primary_key=True, foreign_key="items.id", default=-1)
+    id: int = Field(primary_key=True, foreign_key="items.id")
 
     # --- file info ---
-    size: int = Field(default=-1)
+    size: int = Field(default=0)
 
     # --- media info ---
-    duration: float
+    duration: float = Field(default=0.0)
     # --- video ---
-    codec: str
+    codec: str = Field(default="")
     resolution: tuple[int, int] = Field(sa_type=ResolutionDecorator)
-    sar: str
-    dar: str
-    framerate: float
+    sar: str = Field(default="")
+    dar: str = Field(default="")
+    framerate: float = Field(default=0.0)
     # --- audio ---
     audio: list[str] = Field(default_factory=list, sa_column=Column(JSON))
 

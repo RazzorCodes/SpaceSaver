@@ -1,8 +1,10 @@
 import subprocess
+from dataclasses import replace
+from fractions import Fraction
 from pathlib import Path
 
 import ffmpeg
-from models.orm import Metadata
+from models.models import ListItem
 
 
 def check_executable() -> bool:
@@ -18,21 +20,30 @@ def check_executable() -> bool:
         return False
 
 
-def probe_file(path: Path) -> Metadata:
+from dataclasses import asdict
 
-    meta = ffmpeg.probe(str(path))
 
+def inspect(item: ListItem):
+    meta = ffmpeg.probe(item.path)
     format_info = meta["format"]
     video_stream = next(s for s in meta["streams"] if s["codec_type"] == "video")
-    audio_streams = [s.__str__() for s in meta["streams"] if s["codec_type"] == "audio"]
+    audio_streams = [str(s) for s in meta["streams"] if s["codec_type"] == "audio"]
 
-    return Metadata(
-        size=path.stat().st_size,
+    framerate = float(Fraction(video_stream["avg_frame_rate"]))
+
+    size = Path(item.path).stat().st_size
+
+    item = replace(
+        item,
+        status="pending",
+        size=size,
         duration=float(format_info["duration"]),
         codec=video_stream["codec_name"],
         resolution=(video_stream["width"], video_stream["height"]),
         sar=video_stream.get("sample_aspect_ratio"),
         dar=video_stream.get("display_aspect_ratio"),
-        framerate=eval(video_stream["avg_frame_rate"]),
-        audio=audio_streams,
+        framerate=framerate,
+        # audio=audio_streams,
     )
+
+    return item

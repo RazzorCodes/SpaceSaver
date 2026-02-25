@@ -7,7 +7,7 @@ from models.configuration import Configuration
 from models.orm import ALL_TABLES
 from sqlalchemy import Engine, inspect
 from sqlalchemy.engine import Engine
-from sqlmodel import SQLModel, create_engine
+from sqlmodel import Session, SQLModel, create_engine
 
 
 @dataclass
@@ -25,6 +25,9 @@ class Database:
     @property
     def engine(self) -> Engine | None:
         return self._engine
+
+    def session(self) -> Session:
+        return Session(self._engine)
 
     def create(self):
         if not self._db_path.parent.exists():

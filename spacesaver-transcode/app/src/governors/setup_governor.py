@@ -2,15 +2,15 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 
-from governors.module import Module, Stage
 from misc.logger import logger
 from models.configuration import Configuration
+from modules.module import Module, Stage, StagedEnum
 
 
 @dataclass
 class Governor:
     configuration: Configuration
-    _modules: list[Module] = field(default_factory=list)
+    _modules: list[Module[StagedEnum]] = field(default_factory=list)
     _executor: ThreadPoolExecutor = field(init=False)
 
     def __post_init__(self):
@@ -38,25 +38,37 @@ class Governor:
         self._executor.shutdown(wait=False)
 
     def ready(self) -> bool:
+        all_ready = True
         for module in self._modules:
-            logger.debug(
+            logger.info(
                 f"{module.__class__.__name__} stage: {module.stage} state: {module.state}"
             )
-            if module.stage != Stage.READY:
-                logger.debug(f"Module {module.__class__.__name__} not ready")
-                return False
-        return True
+            if module.stage != Stage.READY and module.stage != Stage.BLOCKED:
+                all_ready = False
+        return all_ready
 
 
 if __name__ == "__main__":
-    from governors.database_module import DatabaseModule
-    from governors.probe_module import ProbeModule
+    from governors.probe_activity import ProbeActivity
+    from governors.scan_activity import ScanActivity
+    from modules.database_module import DatabaseModule
+    from modules.list_module import ListModule
+    from modules.probe_module import ProbeModule
 
-    gov = Governor(Configuration(), _modules=[DatabaseModule(), ProbeModule()])
+    db_mod = DatabaseModule()
+    pb_mod = ProbeModule()
+    ls_mod = ListModule()
+
+    gov = Governor(Configuration(), _modules=[db_mod, pb_mod, ls_mod])
+    pb_gov = ProbeActivity(_modules=[db_mod, pb_mod])
+    sc_act = ScanActivity(_modules=[db_mod, ls_mod])
     gov.setup()
 
     passed = 0
-    while not gov.ready() and passed < 5:
+    while not gov.ready() and not passed < 5:
         time.sleep(1)
         passed += 1
         logger.info("Waiting...")
+
+    sc_act.loop()
+    pb_gov.loop()

@@ -1,21 +1,8 @@
-"""
-classifier.py — Determine media metadata from a filename string.
-
-Hardened per §2.2:
-  - Input:  raw filename string
-  - Output: DeclaredMetadata dataclass — never a dict, never None
-  - All parsing is defensive: a field parse failure does not affect other fields
-  - No exceptions escape — partial results with Unknown sentinels
-  - Fully unit-testable without filesystem access or ffprobe
-"""
-
 from __future__ import annotations
 
 import logging
 import os
 import re
-
-from models import DeclaredMetadata, UNKNOWN_SENTINEL
 
 log = logging.getLogger(__name__)
 
@@ -53,7 +40,9 @@ _CODEC_RE = re.compile(
 
 # Format / pixel format indicators
 _FORMAT_RE = re.compile(
-    _B + r"(10[._-]?bit|10bit|8bit|12bit|hdr|hdr10|hdr10\+|dv|dolby[\._\s]?vision|hlg)" + _E,
+    _B
+    + r"(10[._-]?bit|10bit|8bit|12bit|hdr|hdr10|hdr10\+|dv|dolby[\._\s]?vision|hlg)"
+    + _E,
     re.IGNORECASE,
 )
 
@@ -101,6 +90,7 @@ _JUNK_TOKENS = re.compile(
     r"|internal|limited|complete|season|episode"
     # Common release groups
     r"|yts|yify|rarbg|eztv|ettv|mkvcage|sparks|fgt|ntb|nf|ion10"
+    r"|brrip|cairn"
     r"|tigole|qxr|bhdstudio|framestor|cinemageddon"
     # Generic noise
     r"|sample|trailer|featurette|extras?"
@@ -116,6 +106,7 @@ _TRAILING_NOISE_RE = re.compile(r"\s+[a-zA-Z0-9]{8,}\s*$")
 
 # ── Pure functions ───────────────────────────────────────────────────────────
 
+
 def _strip_watermark(text: str) -> str:
     """Strip website/group watermarks that appear before the real title."""
     cleaned = _URL_WATERMARK_RE.sub("", text).strip()
@@ -123,7 +114,7 @@ def _strip_watermark(text: str) -> str:
         return cleaned
     m = _LEADING_TAG_RE.match(text)
     if m:
-        candidate = text[m.end():].strip()
+        candidate = text[m.end() :].strip()
         if len(candidate) >= 3:
             return candidate
     return text
@@ -163,88 +154,4 @@ def clean_filename(raw: str) -> str:
     if len(result) > 120:
         result = result[:120].rsplit(" ", 1)[0]
 
-    return result
-
-
-# ── Field extractors (each catches its own errors) ──────────────────────────
-
-def _extract_codec(filename: str) -> str:
-    try:
-        m = _CODEC_RE.search(filename)
-        if m:
-            raw = m.group(1).lower()
-            # Normalise common variants
-            norm = {"x265": "h265", "x264": "h264", "h.265": "h265", "h.264": "h264"}
-            return norm.get(raw, raw)
-    except Exception:  # noqa: BLE001
-        pass
-    return UNKNOWN_SENTINEL
-
-
-def _extract_format(filename: str) -> str:
-    try:
-        m = _FORMAT_RE.search(filename)
-        if m:
-            raw = m.group(1).lower().replace(".", "").replace("-", "").replace("_", "")
-            return raw
-    except Exception:  # noqa: BLE001
-        pass
-    return UNKNOWN_SENTINEL
-
-
-def _extract_resolution(filename: str) -> str:
-    try:
-        m = _RESOLUTION_RE.search(filename)
-        if m:
-            raw = m.group(1).lower()
-            res_map = {
-                "2160p": "3840x2160", "4k": "3840x2160", "uhd": "3840x2160",
-                "1080p": "1920x1080", "1080i": "1920x1080",
-                "720p": "1280x720",
-                "576p": "720x576",
-                "480p": "720x480",
-            }
-            return res_map.get(raw, raw)
-    except Exception:  # noqa: BLE001
-        pass
-    return UNKNOWN_SENTINEL
-
-
-def _extract_framerate(filename: str) -> str:
-    try:
-        m = _FRAMERATE_RE.search(filename)
-        if m:
-            return m.group(1)
-    except Exception:  # noqa: BLE001
-        pass
-    return UNKNOWN_SENTINEL
-
-
-# ── Main classifier ─────────────────────────────────────────────────────────
-
-def classify(filename: str) -> DeclaredMetadata:
-    """
-    Classify a raw filename into declared metadata.
-
-    Input:  raw filename string (not a full path — just the filename)
-    Output: DeclaredMetadata dataclass — never None, never a dict.
-            Failed fields are set to the Unknown sentinel.
-    No exceptions escape this function.
-    """
-    try:
-        result = DeclaredMetadata(
-            codec=_extract_codec(filename),
-            format=_extract_format(filename),
-            resolution=_extract_resolution(filename),
-            framerate=_extract_framerate(filename),
-            # SAR and DAR are rarely in filenames — default to Unknown
-            sar=UNKNOWN_SENTINEL,
-            dar=UNKNOWN_SENTINEL,
-        )
-    except Exception:  # noqa: BLE001
-        # Total failure — return all-Unknown
-        result = DeclaredMetadata()
-
-    # <telemetry>: classifier_result(uuid=<caller-provides>, declared_fields_parsed=N, fields_unknown=N)
-    #   — emitted by the caller since classifier doesn't know the uuid
     return result
