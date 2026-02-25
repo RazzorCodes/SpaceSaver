@@ -1,13 +1,26 @@
+import subprocess
 from pathlib import Path
 
 import ffmpeg
+from models.orm import Metadata
 
-from app.src.models.orm import Metadata
+
+def check_executable() -> bool:
+    try:
+        subprocess.run(
+            ["ffprobe", "-h"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+        )
+        return True
+    except FileNotFoundError:
+        return False
 
 
 def probe_file(path: Path) -> Metadata:
 
-    meta = ffmpeg.probe("input.mp4")
+    meta = ffmpeg.probe(str(path))
 
     format_info = meta["format"]
     video_stream = next(s for s in meta["streams"] if s["codec_type"] == "video")

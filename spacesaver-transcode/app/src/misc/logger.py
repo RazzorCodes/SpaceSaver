@@ -2,7 +2,7 @@ import logging
 
 from colorlog import ColoredFormatter
 
-TRACE_LEVEL = 5
+TRACE_LEVEL = 15  # ... info - trace - debug
 logging.addLevelName(TRACE_LEVEL, "TRACE")
 
 
@@ -20,7 +20,7 @@ formatter = ColoredFormatter(
     "%(log_color)s[%(asctime)s] [%(filename)s:%(lineno)d] [%(levelname)s] %(message)s",
     datefmt="%d/%m/%y %H:%M:%S",
     log_colors={
-        "TRACE": "green",
+        "TRACE": "white",
         "DEBUG": "blue",
         "INFO": "white",
         "WARNING": "yellow",
@@ -30,8 +30,8 @@ formatter = ColoredFormatter(
 )
 
 handler = logging.StreamHandler()
-handler.setFormatter(formatter)
+handler.setFormatter(fmt=formatter)
 
 logger = LoggerEx(__name__)
-logger.setLevel(TRACE_LEVEL)
+logger.setLevel(logging.DEBUG)
 logger.addHandler(handler)

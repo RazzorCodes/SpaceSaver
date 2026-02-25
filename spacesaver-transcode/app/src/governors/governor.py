@@ -1,41 +1,62 @@
-import pathlib
-from dataclasses import Field, dataclass
-from enum import StrEnum
-from sqlite3 import Connection
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, field
 
-from app.src.data.db import Database
-from app.src.governors.gov_db import DatabaseModule
-from app.src.governors.module import Module
-from app.src.misc.logger import logger
-from app.src.models.configuration import Configuration
+from governors.module import Module, Stage
+from misc.logger import logger
+from models.configuration import Configuration
 
 
 @dataclass
 class Governor:
     configuration: Configuration
-    _modules: list[Module] | None = None
+    _modules: list[Module] = field(default_factory=list)
+    _executor: ThreadPoolExecutor = field(init=False)
 
-    def setup(self):
-        if not self._modules or self._modules.count == 0:
-            logger.critical("No modules available")
+    def __post_init__(self):
+        self._executor = ThreadPoolExecutor(max_workers=len(self._modules) or 1)
+
+    def setup(self) -> None:
+        if not self._modules:
+            logger.warning("No modules available to set up")
             return
+
+        futures = {
+            self._executor.submit(module.setup, self.configuration): module
+            for module in self._modules
+        }
+
+        for future in as_completed(futures):
+            module = futures[future]
+            try:
+                result = future.result()
+            except Exception as ex:
+                logger.error(f"{module.__class__.__name__} raised during setup: {ex}")
+                result = False
+            Module.setup_cb(result, module)
+
+        self._executor.shutdown(wait=False)
+
+    def ready(self) -> bool:
         for module in self._modules:
-            logger.info(f"Initializing {module.__class__.__name__}")
-            if module.setup():
-                logger.info(f"Success {module.__class__.__name__}")
-            else:
-                logger.warning(f"Faliure {module.__class__.__name__}")
-
-
-gov = Governor(
-    configuration=Configuration(database_path=pathlib.Path("./help/db.db")),
-    _modules=[
-        DatabaseModule(
-            _database=Database(
-                Configuration(database_path=pathlib.Path("./help/db.db"))
+            logger.debug(
+                f"{module.__class__.__name__} stage: {module.stage} state: {module.state}"
             )
-        )
-    ],
-)
+            if module.stage != Stage.READY:
+                logger.debug(f"Module {module.__class__.__name__} not ready")
+                return False
+        return True
 
-gov.setup()
+
+if __name__ == "__main__":
+    from governors.database_module import DatabaseModule
+    from governors.probe_module import ProbeModule
+
+    gov = Governor(Configuration(), _modules=[DatabaseModule(), ProbeModule()])
+    gov.setup()
+
+    passed = 0
+    while not gov.ready() and passed < 5:
+        time.sleep(1)
+        passed += 1
+        logger.info("Waiting...")

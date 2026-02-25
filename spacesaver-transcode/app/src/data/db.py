@@ -1,26 +1,30 @@
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
+from misc.logger import logger
+from models.configuration import Configuration
+from models.orm import ALL_TABLES
 from sqlalchemy import Engine, inspect
+from sqlalchemy.engine import Engine
 from sqlmodel import SQLModel, create_engine
-
-from app.src.misc.logger import logger
-from app.src.models.configuration import Configuration
-from app.src.models.orm import ALL_TABLES
 
 
 @dataclass
 class Database:
-    _db_path: Path
-    _engine: Engine
-
-    def __init__(self, config: Configuration):
-        self._db_path = config.database_path
+    _db_path: Path  # = field(init=False)
+    _engine: Engine | None = field(default=None)
 
     @property
     def exists(self) -> bool:
-        return self._db_path.exists()
+        logger.trace(
+            f"Checking if database exists: {self._db_path} : {self._db_path.exists()}"
+        )
+        return self._db_path and self._db_path.exists()
+
+    @property
+    def engine(self) -> Engine | None:
+        return self._engine
 
     def create(self):
         if not self._db_path.parent.exists():
@@ -38,7 +42,8 @@ class Database:
     def connect(self):
         if not self._engine:
             try:
-                self._engine = create_engine(self._db_path.__str__())
+                sqlite_url = f"sqlite:///{self._db_path}"
+                self._engine = create_engine(sqlite_url)
             except Exception as Ex:
                 logger.critical(f"Could not create engine: {Ex}")
                 return False
@@ -51,7 +56,10 @@ class Database:
         return True
 
     def validate(self):
+        logger.debug(f"No validation is being done")
         return True  # we do not support checks
 
     def migrate(self):
+
+        logger.debug(f"No migration is being done")
         return False  # or migrations for now
