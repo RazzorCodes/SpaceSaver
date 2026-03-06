@@ -12,7 +12,7 @@ class Activity(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def setup(self, *args, **kwargs) -> None:
+    def setup(self, *args, **kwargs) -> bool:
         pass
 
     @abstractmethod

@@ -95,15 +95,30 @@ def upsert_list_item(db: Database, record: ListItem) -> bool:
             return False
 
 
+from typing import Sequence
+
+
 def read_list_items(
-    db: Database, status_filter: WorkItemStatus | None = None
+    db: Database,
+    status_filter: WorkItemStatus | Sequence[WorkItemStatus] | None = None,
+    item_hash: str | None = None,
 ) -> list[ListItem]:
-    """Retrieves all list items, optionally filtered by their processing status."""
+    """Retrieves list items, optionally filtered by processing status(es) and/or hash."""
     with db.session() as session:
         stmt = select(Items).options(selectinload(Items.metadata_item))
 
+        # Handle status filtering (single or multiple)
         if status_filter is not None:
-            stmt = stmt.where(Items.status == status_filter)
+            # If it's a list/tuple/set, use the SQL 'IN' clause
+            if isinstance(status_filter, (list, tuple, set)):
+                stmt = stmt.where(Items.status.in_(status_filter))
+            # If it's just a single status, use the standard equality check
+            else:
+                stmt = stmt.where(Items.status == status_filter)
+
+        # Handle hash filtering
+        if item_hash is not None:
+            stmt = stmt.where(Items.hash == item_hash)
 
         results = session.exec(stmt).all()
 

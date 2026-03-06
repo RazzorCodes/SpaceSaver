@@ -1,4 +1,5 @@
-from dataclasses import dataclass
+import threading
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import engine.classifier as classifier
@@ -20,33 +21,39 @@ class ScanActivity(Activity):
     db: Database | None = None
     _path: Path | None = None
     _probe: bool = False
+    _abort_flag: threading.Event = field(default_factory=threading.Event)
 
     @property
     def valid(self) -> bool:
         return bool(self._path and self._path.exists() and self.db is not None)
 
-    def setup(self, db: Database, path: Path, probe: bool = False) -> None:
+    def setup(self, db: Database, path: Path, probe: bool = False) -> bool:
         self.db = db
         self._path = path
         self._probe = probe
+        self._abort_flag.clear()
 
         if not path.exists():
             logger.warning(f"Scan activity set up with inexistent path: {self._path}")
+            return False
 
-        # Check the prober executable once during setup, not during the file loop
         if self._probe and not prober.check_executable():
             logger.error("Probe was requested, but ffprobe executable was not found.")
-            self._probe = False  # Disable probing to prevent loop crashes
+            return False
+
+        return True
 
     def run(self) -> None:
         if not self.valid:
             logger.error("Scan activity invalid: Missing path or database")
             return
 
-        # Bind to local variable so type-checkers know it's not None inside the callback
         database = self.db
 
         def on_file_found(file_path: Path) -> None:
+            if self._abort_flag.is_set():
+                return
+
             path_str = str(file_path)
 
             record = ListItem(
@@ -57,7 +64,7 @@ class ScanActivity(Activity):
                 size=file_path.stat().st_size,
             )
 
-            if self._probe:
+            if self._probe and not self._abort_flag.is_set():
                 record = prober.inspect(record)
 
             if upsert_list_item(database, record):
@@ -68,10 +75,20 @@ class ScanActivity(Activity):
         logger.info(f"Starting scan on {self._path}")
 
         files = list_path(
-            path=self._path, ext_wl=SCAN_FILES_EXTENSIONS, on_item=on_file_found
+            path=self._path,
+            ext_wl=SCAN_FILES_EXTENSIONS,
+            cancel=self._abort_flag,
+            on_item=on_file_found,
         )
 
-        logger.info(f"Scan complete. Found and processed {len(files)} files.")
+        if self._abort_flag.is_set():
+            logger.warning(
+                f"Scan was canceled mid-way. Processed {len(files)} files before stopping."
+            )
+        else:
+            logger.info(f"Scan complete. Found and processed {len(files)} files.")
 
     def cancel(self) -> None:
-        raise NotImplementedError
+        """Triggers the abort flag, which tells the directory walker to stop."""
+        logger.info("Cancel requested. Stopping scan...")
+        self._abort_flag.set()
