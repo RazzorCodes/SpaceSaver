@@ -100,4 +100,10 @@ class DatabaseModule(Module[State]):
 
         self._database = db
         self.state = State.READY
+        logger.info("Database module ready")
+        return True
+
+    @override
+    def shutdown(self, force: bool) -> bool:
+        self._database.close(force)
         return True

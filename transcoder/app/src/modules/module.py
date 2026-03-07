@@ -46,7 +46,11 @@ class Module(ABC, Generic[T]):
 
     @abstractmethod
     def setup(self, config: Configuration) -> bool:
-        raise NotImplementedError
+        pass
+
+    @abstractmethod
+    def shutdown(self, force: bool) -> bool:
+        pass
 
     @staticmethod
     def setup_cb(result: bool, module: "Module") -> None:

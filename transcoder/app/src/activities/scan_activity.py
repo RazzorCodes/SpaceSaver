@@ -1,13 +1,14 @@
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import override
 
 import engine.classifier as classifier
 import engine.hash as hasher
 import engine.probe as prober
 from activities.activity import Activity
 from data.db import Database
-from data.db_op import upsert_list_item
+from data.db_op import create_list_item, upsert_list_item
 from engine.list import list_path
 from misc.logger import logger
 from models.models import ListItem
@@ -22,6 +23,11 @@ class ScanActivity(Activity):
     _path: Path | None = None
     _probe: bool = False
     _abort_flag: threading.Event = field(default_factory=threading.Event)
+
+    @property
+    @override
+    def type(self) -> str:
+        return "scan"
 
     @property
     def valid(self) -> bool:
@@ -63,14 +69,18 @@ class ScanActivity(Activity):
                 name=classifier.clean_filename(path_str),
                 size=file_path.stat().st_size,
             )
+            try:
+                if self._probe and not self._abort_flag.is_set():
+                    record = prober.inspect(record)
 
-            if self._probe and not self._abort_flag.is_set():
-                record = prober.inspect(record)
-
-            if upsert_list_item(database, record):
-                logger.debug(f"Upserted DB record for: {file_path.name}")
-            else:
-                logger.error(f"Failed to upsert DB record for: {file_path.name}")
+                if upsert_list_item(database, record):
+                    logger.debug(f"Upserted DB record for: {file_path.name}")
+                else:
+                    logger.error(f"Failed to upsert DB record for: {file_path.name}")
+            except:
+                logger.error(f"Prober failed on file {path_str}")
+                record.status = WorkItemStatus.ERROR
+                create_list_item(database, record)
 
         logger.info(f"Starting scan on {self._path}")
 

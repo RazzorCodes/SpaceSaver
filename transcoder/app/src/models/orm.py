@@ -16,7 +16,7 @@ class WorkItemStatus(StrEnum):
     PROCESSING = "processing"
     # --- end state ---
     DONE = "done"  # processed
-    OPTIMAL = "optimal"  # already optimal
+    ABORTED = "aborted"  # already optimal
     ERROR = "error"  # failed
 
 

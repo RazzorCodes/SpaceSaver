@@ -1,0 +1,17 @@
+version: "3.8"
+name: compose-test
+
+services:
+  spacesaver:
+    build:
+      context: ../app
+      dockerfile: ../containerfile/sps-transcode-test
+    container_name: spacesaver-api
+    ports:
+      - "8000:8000"
+    volumes:
+      - ../app:/app:Z
+      - /home/andrei/Videos:/home/andrei/Videos:Z
+    environment:
+      - PYTHONPATH=/app/src
+    command: uvicorn src.app:app --host 0.0.0.0 --port 8000 --reload

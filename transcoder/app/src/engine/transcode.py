@@ -92,7 +92,7 @@ def transcode_file(
     if resolution_cap:
         cmd += ["-vf", f"scale=-2:{resolution_cap}"]
 
-    # Launch ffmpeg
+    # 1. Launch ffmpeg
     process = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
@@ -101,14 +101,21 @@ def transcode_file(
         bufsize=1,
     )
 
+    # 2. Dedicated killer function to watch the abort flag
+    def kill_if_cancelled():
+        while process.poll() is None:
+            if cancel_event and cancel_event.wait(timeout=0.5):
+                process.kill()
+                break
+
+    # 3. Start the watcher immediately
+    if cancel_event:
+        killer_thread = threading.Thread(target=kill_if_cancelled, daemon=True)
+        killer_thread.start()
+
+    # 4. Progress loop
     if process.stdout:
         for line in process.stdout:
-            # Check if another thread asked us to abort
-            if cancel_event and cancel_event.is_set():
-                process.terminate()
-                process.wait()
-                raise InterruptedError("Transcoding was cancelled.")
-
             line = line.strip()
             if line.startswith("frame="):
                 try:
@@ -122,12 +129,16 @@ def transcode_file(
                         if total_frames > 0
                         else 0.0
                     )
-                    pct = min(99.9, pct)  # Cap at 99.9 until the process actually exits
+                    pct = min(99.9, pct)
                     progress_callback(pct, frames_done, total_frames)
 
     process.wait()
 
-    if process.returncode != 0 and (not cancel_event or not cancel_event.is_set()):
+    # 5. Check exit states
+    if cancel_event and cancel_event.is_set():
+        raise InterruptedError("Transcoding was cancelled.")
+
+    if process.returncode != 0:
         stderr_out = process.stderr.read() if process.stderr else "Unknown error"
         raise RuntimeError(
             f"ffmpeg exited with code {process.returncode}:\n{stderr_out.strip()}"

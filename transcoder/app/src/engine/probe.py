@@ -24,26 +24,37 @@ from dataclasses import asdict
 
 
 def inspect(item: ListItem):
-    meta = ffmpeg.probe(item.path)
-    format_info = meta["format"]
-    video_stream = next(s for s in meta["streams"] if s["codec_type"] == "video")
-    audio_streams = [str(s) for s in meta["streams"] if s["codec_type"] == "audio"]
+    try:
+        meta = ffmpeg.probe(item.path)
+        format_info = meta["format"]
+        video_stream = next(s for s in meta["streams"] if s["codec_type"] == "video")
+        audio_streams = [str(s) for s in meta["streams"] if s["codec_type"] == "audio"]
 
-    framerate = float(Fraction(video_stream["avg_frame_rate"]))
+        framerate = float(Fraction(video_stream["avg_frame_rate"]))
 
-    size = Path(item.path).stat().st_size
+        size = Path(item.path).stat().st_size
 
-    item = replace(
-        item,
-        status="pending",
-        size=size,
-        duration=float(format_info["duration"]),
-        codec=video_stream["codec_name"],
-        resolution=(video_stream["width"], video_stream["height"]),
-        sar=video_stream.get("sample_aspect_ratio"),
-        dar=video_stream.get("display_aspect_ratio"),
-        framerate=framerate,
-        # audio=audio_streams,
-    )
+        item = replace(
+            item,
+            status="pending",
+            size=size,
+            duration=float(format_info["duration"]),
+            codec=video_stream["codec_name"],
+            resolution=(video_stream["width"], video_stream["height"]),
+            sar=video_stream.get("sample_aspect_ratio"),
+            dar=video_stream.get("display_aspect_ratio"),
+            framerate=framerate,
+            # audio=audio_streams,
+        )
+    except ffmpeg.Error as e:
+        # THE FIX: Extract and decode the actual error from the ffmpeg binary
+        error_detail = (
+            e.stderr.decode("utf-8", errors="ignore")
+            if e.stderr
+            else "No stderr output"
+        )
+        raise RuntimeError(
+            f"ffprobe actually crashed on {item.name} because:\n{error_detail}"
+        )
 
     return item

@@ -5,3 +5,4 @@ fastapi
 sqlalchemy
 colorlog
 schedule
+uvicorn

@@ -1,6 +1,7 @@
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import override
 
 import engine.probe as prober
 from activities.activity import Activity
@@ -18,6 +19,11 @@ class TranscodeActivity(Activity):
     _target: Path | None = None
     _record: ListItem | None = None
     _abort_flag: threading.Event = field(default_factory=threading.Event)
+
+    @property
+    @override
+    def type(self) -> str:
+        return "tran"
 
     @property
     def valid(self) -> bool:
@@ -69,33 +75,27 @@ class TranscodeActivity(Activity):
             )
 
         temp_output = self._target.with_suffix(".tmp.mkv")
-
         logger.info(f"Starting transcode of {self._target.name}")
-
         self._set_status(WorkItemStatus.PROCESSING)
 
-        worker = threading.Thread(
-            target=transcode_file,
-            kwargs={
-                "input_path": self._target,
-                "output_path": temp_output,
-                "crf": 20,
-                "progress_callback": live_updater,
-                "cancel_event": self._abort_flag,
-            },
-        )
-
         try:
-            worker.start()
-            worker.join()
+            # Call the transcode block directly; the Governor already placed us in a thread!
+            transcode_file(
+                input_path=self._target,
+                output_path=temp_output,
+                crf=20,
+                progress_callback=live_updater,
+                cancel_event=self._abort_flag,
+            )
 
+            # Check if we were cancelled during the run
             if self._abort_flag.is_set():
                 logger.warning(f"\nTranscode cancelled for {self._target.name}")
                 if temp_output.exists():
                     temp_output.unlink()
-                self._set_status(WorkItemStatus.PENDING)
-                return
+                return  # Status was already set to ABORTED in cancel()
 
+            # Success! Swap files
             final_output = self._target.with_suffix(".mkv")
             if temp_output.exists():
                 temp_output.replace(final_output)
@@ -104,6 +104,7 @@ class TranscodeActivity(Activity):
 
             logger.info(f"\nTranscode complete! Saved as {final_output.name}")
 
+            # Update database record
             self._record.path = str(final_output)
             self._record.size = final_output.stat().st_size
             self._set_status(WorkItemStatus.DONE)
@@ -112,9 +113,10 @@ class TranscodeActivity(Activity):
             logger.error(f"\nTranscode failed for {self._target.name}: {e}")
             if temp_output.exists():
                 temp_output.unlink()
-            # 4. Mark as ERROR if ffmpeg crashed or threw an exception
+            # Status will only be ERROR if it genuinely crashed
             self._set_status(WorkItemStatus.ERROR)
 
     def cancel(self) -> None:
         logger.info("Cancel requested. Stopping transcode...")
         self._abort_flag.set()
+        self._set_status(WorkItemStatus.ABORTED)

@@ -3,9 +3,20 @@ An <Activity> handles a shoot-and-forget flow for a <sub-governor>.
 """
 
 from abc import ABC, abstractmethod
+from enum import StrEnum
 
 
 class Activity(ABC):
+    @property
+    @abstractmethod
+    def type(self) -> str:
+        pass
+
+    # @type.setter
+    # @abstractmethod
+    # def type(self, value: str) -> None:
+    #    pass
+
     @property
     @abstractmethod
     def valid(self) -> bool:
