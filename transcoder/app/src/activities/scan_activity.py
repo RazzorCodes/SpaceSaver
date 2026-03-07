@@ -77,8 +77,8 @@ class ScanActivity(Activity):
                     logger.debug(f"Upserted DB record for: {file_path.name}")
                 else:
                     logger.error(f"Failed to upsert DB record for: {file_path.name}")
-            except:
-                logger.error(f"Prober failed on file {path_str}")
+            except Exception as Ex:
+                logger.error(f"Prober failed on file {path_str}: {Ex}")
                 record.status = WorkItemStatus.ERROR
                 create_list_item(database, record)
 

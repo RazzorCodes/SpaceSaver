@@ -3,7 +3,6 @@ An <Activity> handles a shoot-and-forget flow for a <sub-governor>.
 """
 
 from abc import ABC, abstractmethod
-from enum import StrEnum
 
 
 class Activity(ABC):

@@ -1,8 +1,6 @@
 from enum import StrEnum
-from typing import Tuple
 
 from sqlalchemy import Column
-from sqlalchemy.orm import declared_attr
 from sqlalchemy.types import JSON
 from sqlmodel import Field, Relationship, SQLModel, String, TypeDecorator
 

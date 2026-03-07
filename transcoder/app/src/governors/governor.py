@@ -1,6 +1,4 @@
-import uuid
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any
 
 from activities.scan_activity import ScanActivity
 from activities.transcode_activity import TranscodeActivity

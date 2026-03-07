@@ -20,15 +20,12 @@ def check_executable() -> bool:
         return False
 
 
-from dataclasses import asdict
-
-
 def inspect(item: ListItem):
     try:
         meta = ffmpeg.probe(item.path)
         format_info = meta["format"]
         video_stream = next(s for s in meta["streams"] if s["codec_type"] == "video")
-        audio_streams = [str(s) for s in meta["streams"] if s["codec_type"] == "audio"]
+        # audio_streams = [str(s) for s in meta["streams"] if s["codec_type"] == "audio"]
 
         framerate = float(Fraction(video_stream["avg_frame_rate"]))
 

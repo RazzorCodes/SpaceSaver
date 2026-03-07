@@ -1,11 +1,8 @@
-import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from misc.logger import logger
-from models.configuration import Configuration
-from models.orm import ALL_TABLES
-from sqlalchemy import Engine, event, inspect
+from sqlalchemy import Engine, event
 from sqlmodel import Session, SQLModel, create_engine
 
 

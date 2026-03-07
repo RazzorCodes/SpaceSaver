@@ -91,7 +91,7 @@ def check_source_consumed():
         print("Source file was consumed (deleted) by the transcoder — OK")
         return True
     else:
-        print(f"Source file test_video_h264.mkv still present!")
+        print("Source file test_video_h264.mkv still present!")
         # Fatal error — source is mounted :rw so delete should succeed
         return False
 

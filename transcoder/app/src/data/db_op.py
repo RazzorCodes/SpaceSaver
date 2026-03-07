@@ -1,5 +1,5 @@
 from dataclasses import asdict
-from typing import Any
+from typing import Any, Sequence
 
 from data.db import Database
 from misc.logger import logger
@@ -93,9 +93,6 @@ def upsert_list_item(db: Database, record: ListItem) -> bool:
             session.rollback()
             logger.error(f"Failed to upsert list item: {e}")
             return False
-
-
-from typing import Sequence
 
 
 def read_list_items(
