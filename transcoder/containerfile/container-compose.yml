@@ -10,6 +10,7 @@ services:
     volumes:
       - ${WORKDIR_DIR:-../../test-data/spacesaver-transcode/workdir}:/workdir:rw,z
       - ${MEDIA_DIR:-../../test-data/spacesaver-transcode/media}:/media:rw,z
+      - ${CACHE_DIR:-../../test-data/spacesaver-transcode/cache}:/cache:rw,z
     environment:
       - TV_CRF=23
       - MOVIE_CRF=23

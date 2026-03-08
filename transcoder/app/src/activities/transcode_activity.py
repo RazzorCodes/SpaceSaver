@@ -1,3 +1,4 @@
+import shutil
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -11,6 +12,7 @@ from engine.transcode import transcode_file
 from misc.logger import logger
 from models.models import ListItem
 from models.orm import WorkItemStatus
+from models.quality import QualitySettings, load_quality
 
 
 @dataclass
@@ -19,6 +21,8 @@ class TranscodeActivity(Activity):
     _target: Path | None = None
     _record: ListItem | None = None
     _abort_flag: threading.Event = field(default_factory=threading.Event)
+    _quality: QualitySettings | None = None
+    _cache_path: Path | None = None
 
     # Live progress — read by StatusActivity via /status
     progress_percent: float = 0.0
@@ -37,9 +41,16 @@ class TranscodeActivity(Activity):
             and self._target.exists()
             and self.db is not None
             and self._record is not None
+            and self._quality is not None
         )
 
-    def setup(self, db: Database, target_hash: str) -> bool:
+    def setup(
+        self,
+        db: Database,
+        target_hash: str,
+        quality: QualitySettings | None = None,
+        cache_path: Path | None = None,
+    ) -> bool:
         self.db = db
         self._abort_flag.clear()
 
@@ -57,6 +68,16 @@ class TranscodeActivity(Activity):
 
         self._record = valid_items[0]
         self._target = Path(self._record.path)
+
+        # Resolve quality: explicit > persisted default (high)
+        if quality is not None:
+            self._quality = quality
+        elif cache_path is not None:
+            self._quality = load_quality(cache_path).settings
+        else:
+            self._quality = QualitySettings()  # high preset defaults
+
+        self._cache_path = cache_path
         return True
 
     def _set_status(self, status: WorkItemStatus) -> None:
@@ -72,21 +93,37 @@ class TranscodeActivity(Activity):
             self._set_status(WorkItemStatus.ERROR)
             return
 
+        assert self._target is not None
+        assert self._quality is not None
+
         def live_updater(percent: float, current_frame: int, total_frames: int):
             self.progress_percent = percent
             self.progress_current_frame = current_frame
             self.progress_total_frames = total_frames
 
-        temp_output = self._target.with_suffix(".tmp.mkv")
-        logger.info(f"Starting transcode of {self._target.name}")
+        # Place the temp file in the cache directory (if available) to avoid
+        # filling up /media during the transcode.
+        if self._cache_path:
+            self._cache_path.mkdir(parents=True, exist_ok=True)
+            temp_output = self._cache_path / f"{self._target.stem}.tmp.mkv"
+        else:
+            temp_output = self._target.with_suffix(".tmp.mkv")
+
+        logger.info(
+            f"Starting transcode of {self._target.name} "
+            f"(crf={self._quality.crf}, preset={self._quality.preset}, "
+            f"res_cap={self._quality.resolution_cap})"
+        )
         self._set_status(WorkItemStatus.PROCESSING)
 
         try:
-            # Call the transcode block directly; the Governor already placed us in a thread!
             transcode_file(
                 input_path=self._target,
                 output_path=temp_output,
-                crf=20,
+                crf=self._quality.crf,
+                preset=self._quality.preset,
+                audio_bitrate=self._quality.audio_bitrate,
+                resolution_cap=self._quality.resolution_cap,
                 progress_callback=live_updater,
                 cancel_event=self._abort_flag,
             )
@@ -98,10 +135,11 @@ class TranscodeActivity(Activity):
                     temp_output.unlink()
                 return  # Status was already set to ABORTED in cancel()
 
-            # Success! Swap files
+            # Success! Move the result back to the source directory.
             final_output = self._target.with_suffix(".mkv")
             if temp_output.exists():
-                temp_output.replace(final_output)
+                # shutil.move handles cross-device moves (cache → media)
+                shutil.move(str(temp_output), str(final_output))
                 if self._target != final_output:
                     self._target.unlink(missing_ok=True)
 
@@ -116,7 +154,6 @@ class TranscodeActivity(Activity):
             logger.error(f"Transcode failed for {self._target.name}: {e}")
             if temp_output.exists():
                 temp_output.unlink()
-            # Status will only be ERROR if it genuinely crashed
             self._set_status(WorkItemStatus.ERROR)
 
     def cancel(self) -> None:
@@ -126,3 +163,4 @@ class TranscodeActivity(Activity):
 
     def result(self):
         return None
+

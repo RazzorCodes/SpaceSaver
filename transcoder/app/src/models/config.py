@@ -8,6 +8,7 @@ class AppConfig(BaseSettings):
     app_port: int = 8000
 
     media_path: Path = Path("/media")
+    cache_path: Path = Path("/cache")
 
     db_path: Path = Path("/storage/spacesaver-transcode/main.db")
 

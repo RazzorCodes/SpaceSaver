@@ -6,3 +6,4 @@ colorlog
 schedule
 uvicorn
 pydantic_settings
+tomli_w
