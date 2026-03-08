@@ -18,7 +18,7 @@ def list_path(
     logger.debug(f"listing path: {path}")
 
     # FIX: Added the missing colon at the end of this line
-    if not path.is_dir(follow_symlinks=True):
+    if not path.is_dir():
         logger.warning(f"attempted to list non-existent or invalid path: {path}")
         return []
 

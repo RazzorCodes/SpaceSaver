@@ -38,7 +38,7 @@ if [ -z "$NEW_VERSION" ]; then
     PATCH=$(echo "$SEMVER" | cut -d. -f3)
 
     # Increment patch
-    PATCH=$((PATCH + 1))
+    # PATCH=$((PATCH + 1))
 
     if [ -n "$SUFFIX" ]; then
         NEW_VERSION="v${MAJOR}.${MINOR}.${PATCH}-${SUFFIX}"

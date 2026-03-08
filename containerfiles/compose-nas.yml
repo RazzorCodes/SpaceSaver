@@ -1,0 +1,46 @@
+version: "3.8"
+name: spacesaver-nas
+
+volumes:
+  media_share:
+    driver: local
+    driver_opts:
+      type: nfs
+      o: addr=nas.lan,rw
+      device: ":/slow/media"
+      
+  storage_share:
+    driver: local
+    driver_opts:
+      type: nfs
+      o: addr=nas.lan,rw
+      device: ":/fast/spacesaver/transcode"
+
+services:
+  spacesaver-transcode:
+    build:
+      context: ../transcoder/app
+      dockerfile: ../containerfile/spacesaver-transcode
+    container_name: spacesaver-transcode
+    ports:
+      - "8000:8000"
+    volumes:
+      # Use the named NAS volumes instead of host bind mounts
+      - storage_share:/storage/spacesaver-transcode:Z
+      - media_share:/media:Z
+    environment:
+      - PYTHONPATH=/app/src
+    restart: unless-stopped
+
+  spyglass:
+    build:
+      context: ../spyglass
+      dockerfile: ../spyglass/Containerfile
+    container_name: spyglass
+    ports:
+      - "5000:5000"
+    environment:
+      - TRANSCODER_URL=http://spacesaver-transcode:8000
+    depends_on:
+      - spacesaver-transcode
+    restart: unless-stopped

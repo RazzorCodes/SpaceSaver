@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Spyglass Control</title>
+    <!-- Modern Typography -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <!-- Boxicons for icons -->
+    <link href='https://unpkg.com/boxicons@2.1.4/css/boxicons.min.css' rel='stylesheet'>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+
+<body>
+    <div class="app-container">
+        <!-- Tabs / Bookmarks -->
+        <nav class="tabs">
+            <button class="tab-btn active" data-tab="library">
+                <i class='bx bx-library'></i> Library
+            </button>
+            <button class="tab-btn" data-tab="queue">
+                <i class='bx bx-list-ol'></i> Queue
+                <span id="queue-badge" class="badge">0</span>
+            </button>
+            <div class="version-tag">SpaceSaver Transcode <span id="app-version">v...</span></div>
+        </nav>
+
+        <main class="content-area">
+            <!-- Library View -->
+            <section id="library" class="tab-pane active">
+                <div class="toolbar">
+                    <div class="toolbar-actions">
+                        <button id="btn-transcode-selected" class="btn btn-primary" disabled>
+                            <i class='bx bx-play-circle'></i> Transcode Selected
+                        </button>
+                        <div class="quality-selector">
+                            <label for="quality-preset">Quality:</label>
+                            <select id="quality-preset" class="select-input">
+                                <option value="low">Low</option>
+                                <option value="mid">Mid</option>
+                                <option value="high">High</option>
+                                <option value="custom">Custom...</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="toolbar-right">
+                        <button id="btn-refresh-lib" class="btn btn-icon" title="Scan Library">
+                            <i class='bx bx-refresh'></i>
+                        </button>
+                    </div>
+                </div>
+
+                <div class="list-container">
+                    <!-- Shown when empty -->
+                    <div id="empty-state" class="empty-state hidden">
+                        <div class="empty-icon"><i class='bx bx-folder-open'></i></div>
+                        <h2>Library is Empty</h2>
+                        <p>Scan your configured media directory to find items.</p>
+                        <button id="btn-scan-large" class="btn btn-lrg btn-primary">
+                            <i class='bx bx-radar'></i> SCAN DIRECTORY
+                        </button>
+                    </div>
+
+                    <!-- Shown when there are items -->
+                    <table class="data-table" id="library-table">
+                        <thead>
+                            <tr>
+                                <th class="col-check"><input type="checkbox" id="check-all"></th>
+                                <th class="col-file">Filename</th>
+                                <th class="col-status">Status</th>
+                                <th class="col-info">Info</th>
+                            </tr>
+                        </thead>
+                        <tbody id="library-body">
+                            <!-- Rows injected via JS -->
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <!-- Queue View -->
+            <section id="queue" class="tab-pane">
+                <div class="toolbar">
+                    <h2>Active Tasks</h2>
+                    <div class="toolbar-right">
+                        <label class="auto-refresh-indicator"
+                            style="cursor: pointer; display: flex; align-items: center; gap: 0.5rem;">
+                            <input type="checkbox" id="toggle-auto-refresh" checked style="width: auto; height: auto;">
+                            Auto-update
+                            <i class='bx bx-loader-alt bx-spin' id="queue-spinner"></i>
+                        </label>
+                        <button id="btn-refresh-queue" class="btn btn-icon" title="Refresh Now">
+                            <i class='bx bx-refresh'></i>
+                        </button>
+                    </div>
+                </div>
+
+                <div class="list-container">
+                    <div id="queue-empty" class="empty-state hidden">
+                        <div class="empty-icon"><i class='bx bx-check-circle'></i></div>
+                        <h2>No Active Tasks</h2>
+                        <p>Select items from the Library to start transcoding.</p>
+                    </div>
+
+                    <div class="queue-list" id="queue-list">
+                        <!-- Queue items injected here -->
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- Custom Quality Modal -->
+    <div id="quality-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Custom Quality Settings</h2>
+                <button class="modal-close"><i class='bx bx-x'></i></button>
+            </div>
+            <div class="modal-body">
+                <form id="custom-quality-form">
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="q-crf">CRF (0-51)</label>
+                            <p class="field-desc">Lower is higher quality.</p>
+                            <input type="number" id="q-crf" name="crf" min="0" max="51" value="18">
+                        </div>
+                        <div class="form-group">
+                            <label for="q-preset">FFmpeg Preset</label>
+                            <p class="field-desc">Balance speed vs efficiency.</p>
+                            <select id="q-preset" name="preset">
+                                <option value="ultrafast">Ultrafast</option>
+                                <option value="superfast">Superfast</option>
+                                <option value="veryfast">Veryfast</option>
+                                <option value="faster">Faster</option>
+                                <option value="fast">Fast</option>
+                                <option value="medium">Medium</option>
+                                <option value="slow" selected>Slow</option>
+                                <option value="slower">Slower</option>
+                                <option value="veryslow">Veryslow</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="q-audio">Audio Bitrate</label>
+                            <p class="field-desc">e.g. 192k, 256k</p>
+                            <input type="text" id="q-audio" name="audio_bitrate" value="256k">
+                        </div>
+                        <div class="form-group">
+                            <label for="q-res">Resolution Cap</label>
+                            <p class="field-desc">Max vertical res (optional)</p>
+                            <input type="number" id="q-res" name="resolution_cap" placeholder="No cap">
+                        </div>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-danger-outline modal-close-btn">Cancel</button>
+                <button type="button" id="btn-save-quality" class="btn btn-primary">
+                    <i class='bx bx-save'></i> Save Settings
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast Notification Container -->
+    <div id="toast-container" class="toast-container"></div>
+
+    <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+</body>
+
+</html>

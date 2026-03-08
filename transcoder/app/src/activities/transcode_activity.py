@@ -28,6 +28,7 @@ class TranscodeActivity(Activity):
     progress_percent: float = 0.0
     progress_current_frame: int = 0
     progress_total_frames: int = 0
+    quality_preset: str = ""
 
     @property
     @override
@@ -72,10 +73,14 @@ class TranscodeActivity(Activity):
         # Resolve quality: explicit > persisted default (high)
         if quality is not None:
             self._quality = quality
+            self.quality_preset = "custom"
         elif cache_path is not None:
-            self._quality = load_quality(cache_path).settings
+            state = load_quality(cache_path)
+            self._quality = state.settings
+            self.quality_preset = state.active_preset.value if state.active_preset else "custom"
         else:
             self._quality = QualitySettings()  # high preset defaults
+            self.quality_preset = "high"
 
         self._cache_path = cache_path
         return True

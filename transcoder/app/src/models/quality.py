@@ -75,8 +75,12 @@ def load_quality(directory: Path) -> QualityState:
 
     # Reconstruct from flat TOML structure
     settings_data = data.get("settings", {})
+    active_preset = data.get("active_preset")
+    if active_preset == "custom":
+        active_preset = None
+
     return QualityState(
-        active_preset=data.get("active_preset"),
+        active_preset=active_preset,
         settings=QualitySettings(**settings_data),
     )
 
@@ -88,7 +92,7 @@ def save_quality(directory: Path, state: QualityState) -> None:
 
     data: dict = {
         "active_preset": state.active_preset.value if state.active_preset else "custom",
-        "settings": state.settings.model_dump(),
+        "settings": state.settings.model_dump(exclude_none=True),
     }
 
     with open(path, "wb") as f:

@@ -14,13 +14,6 @@ SpaceSaver is a media transcoder designed to automatically optimize your media l
 - It is not designed to run on multiple nodes or scale horizontally against a single SQLite instances.
 - What it is really is a fancy ffmpeg orchestrator for very lazy people.
 
-## Architecture
-
-SpaceSaver consists of:
-- **FastAPI Endpoint Module**: Handles incoming requests and provides asynchronous status updates.
-- **Worker Module**: Manages dual `ThreadPoolExecutors` (one for short-lived queries like scans and status requests, another for heavy transcoding workloads).
-- **SQLite Database**: Tracks workload and handles UPSERTS and list retrieval using `SQLModel`.
-
 ## API Endpoints
 
 | Method | Endpoint | Description |

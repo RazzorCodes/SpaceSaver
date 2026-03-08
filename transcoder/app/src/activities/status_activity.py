@@ -61,6 +61,12 @@ class StatusActivity(Activity):
                         "current_frame": act.progress_current_frame,
                         "total_frames": act.progress_total_frames,
                     }
+                    if hasattr(act, "_record") and act._record:
+                        entry["name"] = act._record.name
+                    if hasattr(act, "quality_preset"):
+                        entry["quality_preset"] = act.quality_preset
+                elif act.type == "scan":
+                    entry["name"] = "Library Scan"
                 result[task_id] = entry
             
             if not self._abort_flag.is_set() and self.result_future and not self.result_future.done(): # type: ignore
