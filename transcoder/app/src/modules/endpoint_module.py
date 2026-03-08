@@ -78,7 +78,7 @@ class EndpointModule(Module[State]):
         @self._app.get("/version")
         def get_version():
             try:
-                with open("/app/version.txt", "r") as f:
+                with open("version.txt", "r") as f:
                     return {"version": f.read().strip()}
             except Exception:
                 return {"version": "unknown"}
