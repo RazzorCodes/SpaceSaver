@@ -28,9 +28,9 @@ SpaceSaver consists of:
 | GET | `/version` | Returns the current application version container label. |
 | GET | `/status` | Returns the current transcoder status and live frame progress of active transcode jobs. |
 | GET | `/list` | Lists all indexed files. |
-| PUT | `/process/{target_hash}` | Pushes a target media file (identified by hash) to the transcode queue. |
+| PUT | `/process/{hash}` | Pushes a target media file (identified by hash) to the transcode queue. |
 | PUT | `/scan` | Triggers a quick or deep probe scan over the media path configuration folder to identify eligible files. |
-| DELETE | `/cancel/{task_uuid}` | Instantly aborts a running Scan or Transcode activity by its task UUID. |
+| DELETE | `/cancel/{uuid}` | Instantly aborts a running Scan or Transcode activity by its task UUID. |
 
 ## Configuration
 

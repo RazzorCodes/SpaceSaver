@@ -47,7 +47,7 @@ class TranscodeActivity(Activity):
     def setup(
         self,
         db: Database,
-        target_hash: str,
+        hash: str,
         quality: QualitySettings | None = None,
         cache_path: Path | None = None,
     ) -> bool:
@@ -58,11 +58,11 @@ class TranscodeActivity(Activity):
             logger.error("Transcode requested, but ffmpeg not found on system.")
             return False
 
-        valid_items = read_list_items(db, item_hash=target_hash)
+        valid_items = read_list_items(db, item_hash=hash)
 
         if len(valid_items) != 1:
             logger.error(
-                f"Transcode of {target_hash} requested but found {len(valid_items)} matches."
+                f"Transcode of {hash} requested but found {len(valid_items)} matches."
             )
             return False
 
@@ -163,4 +163,3 @@ class TranscodeActivity(Activity):
 
     def result(self):
         return None
-

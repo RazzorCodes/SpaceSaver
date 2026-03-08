@@ -54,9 +54,9 @@ class WorkerModule(Module[State]):
             self.active_tasks[task_id] = activity
         return task_id
 
-    def cancel(self, task_uuid: str) -> bool:
+    def cancel(self, uuid: str) -> bool:
         with self._tasks_lock:
-            activity = self.active_tasks.pop(task_uuid, None)
+            activity = self.active_tasks.pop(uuid, None)
         if activity is None:
             return False
         activity.cancel()

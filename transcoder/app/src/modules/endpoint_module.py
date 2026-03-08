@@ -2,9 +2,12 @@ import asyncio
 from enum import StrEnum
 from typing import override
 
+from activities.list_activity import ListActivity
+from activities.scan_activity import ScanActivity
+from activities.status_activity import StatusActivity
+from activities.transcode_activity import TranscodeActivity
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
 from misc.logger import logger
 from models.config import AppConfig
 from models.quality import (
@@ -16,10 +19,7 @@ from models.quality import (
     save_quality,
 )
 from modules.module import Module, Stage
-from activities.list_activity import ListActivity
-from activities.scan_activity import ScanActivity
-from activities.status_activity import StatusActivity
-from activities.transcode_activity import TranscodeActivity
+from pydantic import BaseModel
 
 
 class State(StrEnum):
@@ -87,11 +87,13 @@ class EndpointModule(Module[State]):
         async def get_list():
             loop = asyncio.get_running_loop()
             future = loop.create_future()
-            
+
             activity = ListActivity()
-            activity.setup(db=self.module_bus["database"]._database, result_future=future)
+            activity.setup(
+                db=self.module_bus["database"]._database, result_future=future
+            )
             self.module_bus["worker"].submit(activity)
-            
+
             # Wait for the worker thread to resolve the future
             return await future
 
@@ -99,34 +101,36 @@ class EndpointModule(Module[State]):
         async def get_status():
             loop = asyncio.get_running_loop()
             future = loop.create_future()
-            
+
             activity = StatusActivity()
-            activity.setup(worker_module=self.module_bus["worker"], result_future=future)
+            activity.setup(
+                worker_module=self.module_bus["worker"], result_future=future
+            )
             self.module_bus["worker"].submit(activity)
-            
+
             return await future
 
-        @self._app.put("/process/{target_hash}")
-        async def process_hash(target_hash: str):
+        @self._app.put("/process/{hash}")
+        async def process_hash(hash: str):
             activity = TranscodeActivity()
-            if not activity.setup(db=self.module_bus["database"]._database, target_hash=target_hash):
+            if not activity.setup(db=self.module_bus["database"]._database, hash=hash):
                 return JSONResponse(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    content={"message": f"Failed to setup transcode for {target_hash}"}
+                    content={"message": f"Failed to setup transcode for {hash}"},
                 )
-            
-            task_id = self.module_bus["worker"].submit(activity)
-            return {"task_id": task_id}
 
-        @self._app.delete("/cancel/{task_uuid}")
-        async def cancel_task(task_uuid: str):
-            success = self.module_bus["worker"].cancel(task_uuid)
+            task_id = self.module_bus["worker"].submit(activity)
+            return {"task": task_id}
+
+        @self._app.delete("/cancel/{uuid}")
+        async def cancel_task(uuid: str):
+            success = self.module_bus["worker"].cancel(uuid)
             if success:
-                return {"message": f"Task {task_uuid} cancelled"}
+                return {"message": f"Task {uuid} cancelled"}
             else:
                 return JSONResponse(
                     status_code=status.HTTP_404_NOT_FOUND,
-                    content={"message": f"Task {task_uuid} not found"}
+                    content={"message": f"Task {uuid} not found"},
                 )
 
         @self._app.put("/scan")
@@ -144,7 +148,7 @@ class EndpointModule(Module[State]):
                 )
 
             task_id = self.module_bus["worker"].submit(activity)
-            return {"task_id": task_id}
+            return {"task": task_id}
 
         @self._app.get("/quality")
         def get_quality():
@@ -163,7 +167,9 @@ class EndpointModule(Module[State]):
             if body.preset and body.custom:
                 return JSONResponse(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    content={"message": "Specify either 'preset' or 'custom', not both."},
+                    content={
+                        "message": "Specify either 'preset' or 'custom', not both."
+                    },
                 )
             if not body.preset and not body.custom:
                 return JSONResponse(
@@ -183,7 +189,9 @@ class EndpointModule(Module[State]):
                 )
 
             save_quality(cache_path, state)
-            logger.info(f"Quality updated: preset={state.active_preset}, crf={state.settings.crf}")
+            logger.info(
+                f"Quality updated: preset={state.active_preset}, crf={state.settings.crf}"
+            )
             return state.model_dump()
 
     def _resolve_quality(
@@ -201,7 +209,7 @@ class EndpointModule(Module[State]):
 
     async def _start_transcode(
         self,
-        target_hash: str,
+        hash: str,
         quality: QualitySettings | None = None,
     ):
         if quality is None:
@@ -211,28 +219,30 @@ class EndpointModule(Module[State]):
         activity = TranscodeActivity()
         if not activity.setup(
             db=self.module_bus["database"]._database,
-            target_hash=target_hash,
+            hash=hash,
             quality=quality,
             cache_path=config.cache_path,
         ):
             return JSONResponse(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                content={"message": f"Failed to setup transcode for {target_hash}"},
+                content={"message": f"Failed to setup transcode for {hash}"},
             )
 
         task_id = self.module_bus["worker"].submit(activity)
-        return {"task_id": task_id}
+        return {"task": task_id}
 
     @override
     def setup(self, config: AppConfig, module_bus: dict | None = None) -> bool:
         logger.info("Setting up endpoint module")
         self._app_host = config.app_host
         self._app_port = config.app_port
-        
+
         self.module_bus = module_bus or {}
 
         self.state = State.READY
-        logger.info("Endpoint module ready (waiting for server orchestration if applicable).")
+        logger.info(
+            "Endpoint module ready (waiting for server orchestration if applicable)."
+        )
         return True
 
     @override
