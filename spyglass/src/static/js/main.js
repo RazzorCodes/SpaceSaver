@@ -3,16 +3,19 @@ document.addEventListener('DOMContentLoaded', () => {
     let libraryItems = [];
     let queueTasks = [];
     let queueRefreshInterval = null;
+    let libraryRefreshInterval = null;
 
     // Elements
     const tabBtns = document.querySelectorAll('.tab-btn');
     const tabPanes = document.querySelectorAll('.tab-pane');
     const btnScanLarge = document.getElementById('btn-scan-large');
     const btnRefreshLib = document.getElementById('btn-refresh-lib');
+    const btnScanLib = document.getElementById('btn-scan-lib');
     const btnRefreshQueue = document.getElementById('btn-refresh-queue');
     const btnTranscodeSelected = document.getElementById('btn-transcode-selected');
     const checkAll = document.getElementById('check-all');
     const toggleAutoRefresh = document.getElementById('toggle-auto-refresh');
+    const toggleAutoRefreshLib = document.getElementById('toggle-auto-refresh-lib');
     const queueSpinner = document.getElementById('queue-spinner');
     const appVersionSpan = document.getElementById('app-version');
     const qualityPresetSelect = document.getElementById('quality-preset');
@@ -32,6 +35,7 @@ document.addEventListener('DOMContentLoaded', () => {
     fetchQueue();
     fetchQuality();
     startQueuePolling();
+    startLibraryPolling();
 
     // --- Tabs Logic ---
     function initTabs() {
@@ -57,11 +61,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // --- Event Listeners ---
     function setupEventListeners() {
-        btnScanLarge.addEventListener('click', triggerScan);
+        btnScanLib.addEventListener('click', triggerScan);
         btnRefreshLib.addEventListener('click', () => {
-            // In library tab, the refresh button triggers a scan
-            triggerScan();
+            fetchLibrary();
+            showToast('Refreshing library...', 'info');
         });
+        btnScanLarge.addEventListener('click', triggerScan);
         btnRefreshQueue.addEventListener('click', () => {
             // In queue tab, simply fetch queue
             fetchQueue();
@@ -74,6 +79,14 @@ document.addEventListener('DOMContentLoaded', () => {
             } else {
                 if (queueRefreshInterval) clearInterval(queueRefreshInterval);
                 queueSpinner.style.display = 'none';
+            }
+        });
+
+        toggleAutoRefreshLib.addEventListener('change', (e) => {
+            if (e.target.checked) {
+                startLibraryPolling();
+            } else {
+                if (libraryRefreshInterval) clearInterval(libraryRefreshInterval);
             }
         });
 
@@ -436,11 +449,14 @@ document.addEventListener('DOMContentLoaded', () => {
         if (queueRefreshInterval) clearInterval(queueRefreshInterval);
         queueRefreshInterval = setInterval(() => {
             fetchQueue();
-            // Optional: periodically refresh library if queue is active
-            if (queueTasks.length > 0) {
-                // Not doing it automatically to avoid flashing UI, user can manually refresh
-            }
         }, 3000); // 3 seconds
+    }
+
+    function startLibraryPolling() {
+        if (libraryRefreshInterval) clearInterval(libraryRefreshInterval);
+        libraryRefreshInterval = setInterval(() => {
+            fetchLibrary();
+        }, 10000); // 10 seconds
     }
 
     // --- Toast Notifications ---

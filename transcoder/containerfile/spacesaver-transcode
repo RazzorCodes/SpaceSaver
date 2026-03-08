@@ -15,9 +15,6 @@ RUN pip install --upgrade pip && \
 
 FROM base AS setup
 
-# Bust the app-stage cache on every build (value injected by build.sh)
-ARG CACHE_BUST
-
 # Install Python dependencies (re-runs every build so new packages are picked up)
 COPY requirements.txt .
 RUN pip install --upgrade pip && \

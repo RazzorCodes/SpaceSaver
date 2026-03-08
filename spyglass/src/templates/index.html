@@ -47,8 +47,17 @@
                         </div>
                     </div>
                     <div class="toolbar-right">
-                        <button id="btn-refresh-lib" class="btn btn-icon" title="Scan Library">
+                        <label class="auto-refresh-indicator"
+                            style="cursor: pointer; display: flex; align-items: center; gap: 0.5rem; margin-right: 1rem;">
+                            <input type="checkbox" id="toggle-auto-refresh-lib" checked
+                                style="width: auto; height: auto;">
+                            Auto-update
+                        </label>
+                        <button id="btn-refresh-lib" class="btn btn-icon" title="Refresh List">
                             <i class='bx bx-refresh'></i>
+                        </button>
+                        <button id="btn-scan-lib" class="btn btn-icon" title="Rescan Database">
+                            <i class='bx bx-radar'></i>
                         </button>
                     </div>
                 </div>

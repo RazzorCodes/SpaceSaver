@@ -112,15 +112,7 @@ class EndpointModule(Module[State]):
 
         @self._app.put("/process/{hash}")
         async def process_hash(hash: str):
-            activity = TranscodeActivity()
-            if not activity.setup(db=self.module_bus["database"]._database, hash=hash):
-                return JSONResponse(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    content={"message": f"Failed to setup transcode for {hash}"},
-                )
-
-            task_id = self.module_bus["worker"].submit(activity)
-            return {"task": task_id}
+            return await self._start_transcode(hash)
 
         @self._app.delete("/cancel/{uuid}")
         async def cancel_task(uuid: str):
@@ -194,27 +186,12 @@ class EndpointModule(Module[State]):
             )
             return state.model_dump()
 
-    def _resolve_quality(
-        self,
-        preset: QualityPreset | None = None,
-        custom: QualitySettings | None = None,
-    ) -> QualitySettings:
-        if custom:
-            return custom
-        if preset:
-            return PRESETS[preset].model_copy()
-        cache_path = self.module_bus["config"].cache_path
-        state = load_quality(cache_path)
-        return state.settings
 
     async def _start_transcode(
         self,
         hash: str,
         quality: QualitySettings | None = None,
     ):
-        if quality is None:
-            quality = self._resolve_quality()
-
         config: AppConfig = self.module_bus["config"]
         activity = TranscodeActivity()
         if not activity.setup(
