@@ -582,7 +582,38 @@ input[type="checkbox"] {
 }
 
 #filter-value-container .select-input {
-    width: 200px;
+    width: 280px;
+}
+
+.compare-inputs {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+}
+
+.compare-inputs.hidden {
+    display: none;
+}
+
+.compare-val-input {
+    width: 100px;
+}
+
+.select-input-sm {
+    background: var(--bg-surface-hover);
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+    padding: 0.4rem 0.5rem;
+    border-radius: 8px;
+    font-family: inherit;
+    font-size: 0.9rem;
+    outline: none;
+    transition: var(--transition);
+}
+
+.select-input-sm:focus {
+    border-color: var(--accent-primary);
+    box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
 }
 
 .active-filters-container {
@@ -879,15 +910,16 @@ input[type="checkbox"] {
     padding-right: 2.5rem;
 }
 
-/* Remove number input arrows */
-.form-group input[type="number"]::-webkit-inner-spin-button,
-.form-group input[type="number"]::-webkit-outer-spin-button {
+/* Remove number input arrows globally */
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
     -webkit-appearance: none;
     margin: 0;
 }
 
-.form-group input[type="number"] {
+input[type="number"] {
     -moz-appearance: textfield;
+    appearance: textfield;
 }
 
 .form-group input:focus,

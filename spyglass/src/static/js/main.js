@@ -28,7 +28,13 @@ document.addEventListener('DOMContentLoaded', () => {
     const filterType = document.getElementById('filter-type');
     const filterValueName = document.getElementById('filter-value-name');
     const filterValueStatus = document.getElementById('filter-value-status');
-    const filterValueInfo = document.getElementById('filter-value-info');
+    const filterValueInfoContainer = document.getElementById('filter-value-info-container');
+    const infoKind = document.getElementById('info-kind');
+    const infoValCodec = document.getElementById('info-val-codec');
+    const infoValQuality = document.getElementById('info-val-quality');
+    const infoValAr = document.getElementById('info-val-ar');
+    const compareOp = document.getElementById('compare-op');
+    const compareVal = document.getElementById('compare-val');
     const btnAddFilter = document.getElementById('btn-add-filter');
     const activeFiltersContainer = document.getElementById('active-filters');
 
@@ -379,12 +385,32 @@ document.addEventListener('DOMContentLoaded', () => {
         filterType.addEventListener('change', () => {
             filterValueName.classList.add('hidden');
             filterValueStatus.classList.add('hidden');
-            filterValueInfo.classList.add('hidden');
+            filterValueInfoContainer.classList.add('hidden');
 
             const t = filterType.value;
             if (t === 'name') filterValueName.classList.remove('hidden');
             if (t === 'status') filterValueStatus.classList.remove('hidden');
-            if (t === 'info') filterValueInfo.classList.remove('hidden');
+            if (t === 'info') filterValueInfoContainer.classList.remove('hidden');
+        });
+
+        infoKind.addEventListener('change', () => {
+            infoValCodec.classList.add('hidden');
+            infoValQuality.classList.add('hidden');
+            infoValAr.classList.add('hidden');
+            compareOp.classList.add('hidden');
+            compareVal.classList.add('hidden');
+
+            const v = infoKind.value;
+            if (v === 'codec') {
+                infoValCodec.classList.remove('hidden');
+            } else if (v === 'quality') {
+                infoValQuality.classList.remove('hidden');
+            } else if (v === 'ar') {
+                infoValAr.classList.remove('hidden');
+            } else if (v === 'duration' || v === 'mb_s') {
+                compareOp.classList.remove('hidden');
+                compareVal.classList.remove('hidden');
+            }
         });
 
         btnAddFilter.addEventListener('click', () => {
@@ -403,9 +429,34 @@ document.addEventListener('DOMContentLoaded', () => {
                 const text = filterValueStatus.options[filterValueStatus.selectedIndex].text;
                 labelStr = `Status: ${text}`;
             } else if (type === 'info') {
-                value = filterValueInfo.value;
-                const text = filterValueInfo.options[filterValueInfo.selectedIndex].text;
-                labelStr = `Info: ${text}`;
+                const ikind = infoKind.value;
+                const kindText = infoKind.options[infoKind.selectedIndex].text;
+
+                if (ikind === 'duration' || ikind === 'mb_s') {
+                    const cOp = compareOp.value;
+                    const cValText = compareVal.value;
+                    if (!cValText) return;
+                    const cVal = parseFloat(cValText);
+
+                    value = `${ikind}|${cOp}|${cVal}`;
+                    labelStr = `Metadata: ${kindText} ${cOp} ${cVal}`;
+                } else if (ikind === 'codec') {
+                    const v = infoValCodec.value;
+                    const vText = infoValCodec.options[infoValCodec.selectedIndex].text;
+                    value = `${ikind}|${v}`;
+                    labelStr = `Metadata: Codec is ${vText}`;
+                } else if (ikind === 'quality') {
+                    const v = infoValQuality.value;
+                    const vText = infoValQuality.options[infoValQuality.selectedIndex].text;
+                    value = `${ikind}|${v}`;
+                    labelStr = `Metadata: Quality is ${vText}`;
+                } else if (ikind === 'ar') {
+                    const v = infoValAr.value.trim();
+                    if (!v) return;
+                    value = `${ikind}|${v.toLowerCase()}`;
+                    labelStr = `Metadata: AR is ${v}`;
+                    infoValAr.value = ''; // clear input
+                }
             }
 
             if (value) {
@@ -452,6 +503,15 @@ document.addEventListener('DOMContentLoaded', () => {
         return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
     }
 
+    function formatDuration(seconds) {
+        if (!seconds) return '0m';
+        const m = Math.floor(seconds / 60);
+        const h = Math.floor(m / 60);
+        const remM = m % 60;
+        if (h > 0) return `${h}h ${remM}m`;
+        return `${m}m`;
+    }
+
     function getQualityLabel(resolution) {
         if (!resolution || !Array.isArray(resolution) || resolution.length < 2) return '';
         const h = resolution[1];
@@ -487,8 +547,37 @@ document.addEventListener('DOMContentLoaded', () => {
                     } else if (f.type === 'status') {
                         return status === f.value.toLowerCase();
                     } else if (f.type === 'info') {
-                        const val = f.value.toLowerCase();
-                        return codec.includes(val) || quality.includes(val);
+                        const parts = f.value.split('|');
+                        const field = parts[0];
+
+                        if (field === 'duration' || field === 'mb_s') {
+                            const op = parts[1];
+                            const numVal = parseFloat(parts[2]);
+
+                            let itemVal = 0;
+                            if (field === 'mb_s') {
+                                if (item.duration > 0) {
+                                    itemVal = (item.size * 8 / 1000000) / item.duration;
+                                } else {
+                                    return false;
+                                }
+                            } else if (field === 'duration') {
+                                itemVal = (item.duration || 0) / 60;
+                            }
+
+                            if (op === '>=') return itemVal >= numVal;
+                            if (op === '<=') return itemVal <= numVal;
+                        } else if (field === 'codec') {
+                            const val = parts[1].toLowerCase();
+                            return codec.includes(val);
+                        } else if (field === 'quality') {
+                            const val = parts[1].toLowerCase();
+                            return quality.includes(val);
+                        } else if (field === 'ar') {
+                            const val = parts[1].toLowerCase();
+                            const itemAR = (item.dar || item.sar || '').toLowerCase();
+                            return itemAR.includes(val);
+                        }
                     }
                     return true;
                 });
@@ -515,6 +604,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
 
                 const sizeStr = formatBytes(item.size);
+                let durationStr = item.duration ? formatDuration(item.duration) : '0s';
+                let mbsStr = '0 Mb/s';
+                if (item.duration && item.duration > 0) {
+                    const mbps = (item.size * 8 / 1000000) / item.duration;
+                    mbsStr = mbps.toFixed(2) + ' Mb/s';
+                }
                 const qualityStr = getQualityLabel(item.resolution) || 'Unknown';
                 const codecStr = item.codec || '???';
                 let resStr = '-';
@@ -522,7 +617,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     resStr = `${item.resolution[0]}x${item.resolution[1]}`;
                 }
                 const arStr = item.dar || item.sar || '-';
-                const infoStr = `${sizeStr} | ${qualityStr} | ${codecStr} | ${resStr} | AR: ${arStr}`;
+                const infoStr = `${sizeStr} | ${durationStr} | ${mbsStr} | ${qualityStr} | ${codecStr} | ${resStr} | AR: ${arStr}`;
 
                 const statusUpper = status.toUpperCase();
                 const displayName = item.name || (item.path ? item.path.split('/').pop() : 'Unknown');

@@ -26,6 +26,9 @@
                     <i class='bx bx-list-ol'></i> Queue
                     <span id="queue-badge" class="badge">0</span>
                 </button>
+                <div class="version-tag">
+                    Transcoder: <span id="app-version">v---</span>
+                </div>
             </nav>
 
             <main class="content-area">
@@ -69,7 +72,7 @@
                                 <select id="filter-type" class="select-input">
                                     <option value="name">Name</option>
                                     <option value="status">Status</option>
-                                    <option value="info">Info</option>
+                                    <option value="info">Metadata</option>
                                 </select>
                             </div>
                             <div class="filter-group" id="filter-value-container">
@@ -83,13 +86,37 @@
                                     <option value="ERROR">Error</option>
                                     <option value="UNSUPPORTED">Unsupported</option>
                                 </select>
-                                <select id="filter-value-info" class="select-input hidden">
-                                    <option value="h264">H.264</option>
-                                    <option value="hevc">HEVC / H.265</option>
-                                    <option value="1080p">1080p</option>
-                                    <option value="720p">720p</option>
-                                    <option value="4k">4K</option>
-                                </select>
+                                <div id="filter-value-info-container" class="compare-inputs hidden">
+                                    <select id="info-kind" class="select-input-sm" style="flex: 1;">
+                                        <option value="codec">Codec</option>
+                                        <option value="quality">Quality</option>
+                                        <option value="ar">Aspect Ratio</option>
+                                        <option value="mb_s">Mb/s</option>
+                                        <option value="duration">Duration (mins)</option>
+                                    </select>
+
+                                    <!-- Dynamic Secondary Inputs -->
+                                    <select id="info-val-codec" class="select-input-sm" style="flex: 1;">
+                                        <option value="h264">H.264</option>
+                                        <option value="hevc">HEVC / H.265</option>
+                                    </select>
+
+                                    <select id="info-val-quality" class="select-input-sm hidden" style="flex: 1;">
+                                        <option value="1080p">1080p</option>
+                                        <option value="720p">720p</option>
+                                        <option value="4k">4K</option>
+                                    </select>
+
+                                    <input type="text" id="info-val-ar" class="select-input-sm hidden"
+                                        style="width: 80px;" placeholder="e.g. 16:9">
+
+                                    <select id="compare-op" class="select-input-sm hidden">
+                                        <option value=">=">&ge;</option>
+                                        <option value="<=">&le;</option>
+                                    </select>
+                                    <input type="number" id="compare-val" class="select-input-sm hidden"
+                                        style="width: 80px;" min="0" placeholder="0">
+                                </div>
                             </div>
                             <button id="btn-add-filter" class="btn btn-primary">
                                 <i class='bx bx-filter-alt'></i> Add Filter
@@ -118,7 +145,7 @@
                                     <th class="col-check"><input type="checkbox" id="check-all"></th>
                                     <th class="col-file">Filename</th>
                                     <th class="col-status">Status</th>
-                                    <th class="col-info">Info</th>
+                                    <th class="col-info">Metadata</th>
                                 </tr>
                             </thead>
                             <tbody id="library-body">
