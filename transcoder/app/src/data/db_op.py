@@ -36,13 +36,13 @@ def create_list_item(db: Database, record: ListItem) -> bool:
             # 1. Create and add the main item
             item = Items(**_get_fields_dict(record, Items))
             session.add(item)
-            session.commit()
+            session.flush()  # Get the ID without committing
             session.refresh(item)
 
             # 2. Create and add the metadata tied to the item's new ID
             metadata = Metadata(**_get_fields_dict(record, Metadata), id=item.id)
             session.add(metadata)
-            session.commit()
+            session.commit()  # Single atomic commit for both
 
             return True
         except Exception as e:
@@ -67,7 +67,7 @@ def upsert_list_item(db: Database, record: ListItem) -> bool:
                 # Insert new
                 new_item = Items(**_get_fields_dict(record, Items))
                 session.add(new_item)
-                session.commit()  # Flush to get the ID for metadata
+                session.flush()  # Get the ID without committing
                 session.refresh(new_item)
                 item_id = new_item.id
 

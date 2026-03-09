@@ -16,16 +16,20 @@ def get_list():
     try:
         response = requests.get(f"{TRANSCODER_URL}/list", timeout=10)
         return jsonify(response.json()), response.status_code
+    except requests.Timeout as e:
+        return jsonify({"error": str(e)}), 504
     except requests.RequestException as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(e)}), 502
 
 @app.route("/api/version", methods=["GET"])
 def get_version():
     try:
         response = requests.get(f"{TRANSCODER_URL}/version", timeout=5)
         return jsonify(response.json()), response.status_code
+    except requests.Timeout as e:
+        return jsonify({"error": str(e)}), 504
     except requests.RequestException as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(e)}), 502
 
 @app.route("/api/spyglass-version", methods=["GET"])
 def get_spyglass_version():
@@ -40,8 +44,10 @@ def get_status():
     try:
         response = requests.get(f"{TRANSCODER_URL}/status", timeout=5)
         return jsonify(response.json()), response.status_code
+    except requests.Timeout as e:
+        return jsonify({"error": str(e)}), 504
     except requests.RequestException as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(e)}), 502
 
 @app.route("/api/process/<hash>", methods=["PUT", "POST"])
 def process_hash(hash):
@@ -49,8 +55,10 @@ def process_hash(hash):
         # Transcoder API expects a PUT /process/{hash}
         response = requests.put(f"{TRANSCODER_URL}/process/{hash}", timeout=5)
         return jsonify(response.json()), response.status_code
+    except requests.Timeout as e:
+        return jsonify({"error": str(e)}), 504
     except requests.RequestException as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(e)}), 502
 
 @app.route("/api/cancel/<uuid>", methods=["DELETE"])
 def cancel_task(uuid):
@@ -59,32 +67,40 @@ def cancel_task(uuid):
         if response.content:
             return jsonify(response.json()), response.status_code
         return jsonify({}), response.status_code
+    except requests.Timeout as e:
+        return jsonify({"error": str(e)}), 504
     except requests.RequestException as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(e)}), 502
 
 @app.route("/api/scan", methods=["PUT", "POST"])
 def scan_library():
     try:
         response = requests.put(f"{TRANSCODER_URL}/scan", timeout=10)
         return jsonify(response.json()), response.status_code
+    except requests.Timeout as e:
+        return jsonify({"error": str(e)}), 504
     except requests.RequestException as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(e)}), 502
 
 @app.route("/api/quality", methods=["GET"])
 def get_quality():
     try:
         response = requests.get(f"{TRANSCODER_URL}/quality", timeout=5)
         return jsonify(response.json()), response.status_code
+    except requests.Timeout as e:
+        return jsonify({"error": str(e)}), 504
     except requests.RequestException as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(e)}), 502
 
 @app.route("/api/quality", methods=["POST"])
 def set_quality():
     try:
         response = requests.post(f"{TRANSCODER_URL}/quality", json=request.json, timeout=5)
         return jsonify(response.json()), response.status_code
+    except requests.Timeout as e:
+        return jsonify({"error": str(e)}), 504
     except requests.RequestException as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(e)}), 502
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)

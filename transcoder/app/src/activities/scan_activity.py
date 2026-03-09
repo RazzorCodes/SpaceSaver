@@ -62,25 +62,34 @@ class ScanActivity(Activity):
 
             path_str = str(file_path)
 
-            record = ListItem(
-                path=path_str,
-                hash=hasher.compute_hash(path_str),
-                status=WorkItemStatus.UNKNOWN,
-                name=classifier.clean_filename(path_str),
-                size=file_path.stat().st_size,
-            )
+            try:
+                record = ListItem(
+                    path=path_str,
+                    hash=hasher.compute_hash(path_str),
+                    status=WorkItemStatus.UNKNOWN,
+                    name=classifier.clean_filename(path_str),
+                    size=file_path.stat().st_size,
+                )
+            except (FileNotFoundError, OSError, RuntimeError) as e:
+                logger.error(f"Failed to inspect {path_str}: {e}")
+                return
+
             try:
                 if self._probe and not self._abort_flag.is_set():
                     record = prober.inspect(record)
+            except Exception as e:
+                logger.error(f"Prober failed on file {path_str}: {e}")
+                record.status = WorkItemStatus.ERROR
 
-                if upsert_list_item(database, record):
+            try:
+                if record.status == WorkItemStatus.ERROR:
+                    create_list_item(database, record)
+                elif upsert_list_item(database, record):
                     logger.debug(f"Upserted DB record for: {file_path.name}")
                 else:
                     logger.error(f"Failed to upsert DB record for: {file_path.name}")
             except Exception as e:
-                logger.error(f"Prober failed on file {path_str}: {e}")
-                record.status = WorkItemStatus.ERROR
-                create_list_item(database, record)
+                logger.error(f"Failed to persist scan result for {path_str}: {e}")
 
         logger.info(f"Starting scan on {self._path}")
 

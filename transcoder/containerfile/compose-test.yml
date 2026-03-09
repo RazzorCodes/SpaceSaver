@@ -11,7 +11,7 @@ services:
       - "8000:8000"
     volumes:
       - ../app:/app:Z
-      - /home/andrei/Videos:/media:Z
+      - ${MEDIA_DIR:-../test-data/media}:/media:Z
       - ../app:/storage/spacesaver-transcode:Z
     environment:
       - PYTHONPATH=/app/src

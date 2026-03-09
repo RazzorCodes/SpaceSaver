@@ -11,7 +11,7 @@ services:
       - "8000:8000"
     volumes:
       - ../transcoder/app:/storage/spacesaver-transcode:Z
-      - /home/andrei/Videos:/media:Z
+      - ${MEDIA_DIR:-/home/andrei/Videos}:/media:Z
     environment:
       - PYTHONPATH=/app/src
     restart: unless-stopped

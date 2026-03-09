@@ -45,6 +45,10 @@ class WorkerModule(Module[State]):
 
     def submit(self, activity: Activity) -> str:
         task_id = f"{activity.type}_{uuid.uuid4().hex[:8]}"
+        
+        with self._tasks_lock:
+            self.active_tasks[task_id] = activity
+            
         if activity.type == "tran":
             self._work_executor.submit(self._run_activity, task_id, activity)
         elif activity.type == "scan":
@@ -53,8 +57,6 @@ class WorkerModule(Module[State]):
             # list, status — all go on the query executor
             self._query_executor.submit(self._run_activity, task_id, activity)
 
-        with self._tasks_lock:
-            self.active_tasks[task_id] = activity
         return task_id
 
     def cancel(self, uuid: str) -> bool:

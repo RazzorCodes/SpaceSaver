@@ -17,3 +17,6 @@ RUN chmod 644 version.txt
 
 ENV PYTHONPATH=/app/src
 EXPOSE 8000
+
+# Default command - override in docker-compose if needed
+CMD ["python", "-m", "app"]

@@ -5,15 +5,23 @@ set -euo pipefail
 VERSION_FILE="src/version.txt"
 REGISTRY="192.168.0.127:5000"
 NEW_VERSION=""
+# Set INSECURE_REGISTRY=true to disable TLS verification
+INSECURE_REGISTRY="${INSECURE_REGISTRY:-false}"
+TLS_VERIFY="true"
+if [ "$INSECURE_REGISTRY" = "true" ]; then
+    TLS_VERIFY="false"
+fi
 
 # ── Parse Arguments ───────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
   case $1 in
     -ver|--version)
+      [[ $# -ge 2 ]] || { echo "Missing value for $1" >&2; exit 1; }
       NEW_VERSION="$2"
       shift 2
       ;;
     -r|--registry)
+      [[ $# -ge 2 ]] || { echo "Missing value for $1" >&2; exit 1; }
       REGISTRY="$2"
       shift 2
       ;;
@@ -52,6 +60,7 @@ if [ -z "$NEW_VERSION" ]; then
     echo "$NEW_VERSION" > "$VERSION_FILE"
 else
     echo "Using manual version: $NEW_VERSION"
+    echo "$NEW_VERSION" > "$VERSION_FILE"
 fi
 
 # ── Build ─────────────────────────────────────────────────────────────────────
@@ -78,14 +87,14 @@ echo "Done: manifest ${MANIFEST_VERSIONED} (amd64 + arm64)"
 # ── Upload ────────────────────────────────────────────────────────────────────
 echo "==> Pushing versioned manifest list..."
 podman manifest push \
-    --tls-verify=false \
+    --tls-verify=${TLS_VERIFY} \
     --all \
     "${MANIFEST_VERSIONED}" \
     "docker://${REGISTRY}/spyglass:${NEW_VERSION}"
 
 echo "==> Pushing latest manifest list..."
 podman manifest push \
-    --tls-verify=false \
+    --tls-verify=${TLS_VERIFY} \
     --all \
     "${MANIFEST_VERSIONED}" \
     "docker://${REGISTRY}/spyglass:latest"

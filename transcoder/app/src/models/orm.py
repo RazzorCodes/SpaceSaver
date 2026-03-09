@@ -59,7 +59,7 @@ class Metadata(SQLModel, table=True):
     duration: float = Field(default=0.0)
     # --- video ---
     codec: str = Field(default="")
-    resolution: tuple[int, int] = Field(sa_type=ResolutionDecorator)
+    resolution: tuple[int, int] = Field(default=(0, 0), sa_type=ResolutionDecorator)
     sar: str = Field(default="")
     dar: str = Field(default="")
     framerate: float = Field(default=0.0)

@@ -44,7 +44,7 @@ Configuration is loaded from environment variables (powered by `pydantic_setting
 Use the provided script to increment the version, build the container image, and seamlessly push it to your local registry.
 
 ```bash
-cd spacesaver/transcoder
+cd transcoder
 ./build.sh --registry zot.lan:5000
 ```
 *(The build script automatically sources `upload-container.sh` to mirror `latest` and versioned tags).*

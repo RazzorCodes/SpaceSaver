@@ -5,6 +5,7 @@ from pathlib import Path
 
 import ffmpeg
 from models.models import ListItem
+from models.orm import WorkItemStatus
 
 
 def check_executable() -> bool:
@@ -24,16 +25,29 @@ def inspect(item: ListItem):
     try:
         meta = ffmpeg.probe(item.path)
         format_info = meta["format"]
-        video_stream = next(s for s in meta["streams"] if s["codec_type"] == "video")
-        # audio_streams = [str(s) for s in meta["streams"] if s["codec_type"] == "audio"]
-
-        framerate = float(Fraction(video_stream["avg_frame_rate"]))
+        
+        video_stream = next(
+            (s for s in meta["streams"] if s.get("codec_type") == "video"),
+            None,
+        )
+        if video_stream is None:
+            raise RuntimeError(f"No video stream found in {item.name}")
+            
+        rate = (
+            video_stream.get("avg_frame_rate")
+            or video_stream.get("r_frame_rate")
+            or "0/1"
+        )
+        try:
+            framerate = 0.0 if rate == "0/0" else float(Fraction(rate))
+        except (ZeroDivisionError, ValueError):
+            framerate = 0.0
 
         size = Path(item.path).stat().st_size
 
         item = replace(
             item,
-            status="pending",
+            status=WorkItemStatus.PENDING,
             size=size,
             duration=float(format_info["duration"]),
             codec=video_stream["codec_name"],

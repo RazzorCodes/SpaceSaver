@@ -41,6 +41,8 @@ class Database:
         return self._engine
 
     def session(self) -> Session:
+        if self._engine is None:
+            raise RuntimeError("Database engine not initialized. Call create() or connect() first.")
         return Session(self._engine)
 
     def create(self):

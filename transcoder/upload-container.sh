@@ -8,6 +8,7 @@ set -euo pipefail
 
 SOURCE=""
 DEST=""
+TLS_VERIFY="true"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -19,9 +20,13 @@ while [[ $# -gt 0 ]]; do
       DEST="$2"
       shift 2
       ;;
+    --insecure)
+      TLS_VERIFY="false"
+      shift
+      ;;
     *)
       echo "Unknown argument: $1"
-      echo "Usage: $0 --source <source> --dest <dest>"
+      echo "Usage: $0 --source <source> --dest <dest> [--insecure]"
       exit 1
       ;;
   esac
@@ -38,7 +43,8 @@ echo "==> Uploading container image..."
 echo "    Source: $SOURCE"
 echo "    Dest:   $DEST"
 
+# Note: Disabling TLS verification (--dest-tls-verify=false) is insecure and should only be used for testing logs
 # Copy from local podman (containers-storage) to remote registry
-skopeo copy --all --dest-tls-verify=false "containers-storage:${SOURCE}" "docker://${DEST}"
+skopeo copy --all --dest-tls-verify="${TLS_VERIFY}" "containers-storage:${SOURCE}" "docker://${DEST}"
 
 echo "==> Upload complete!"

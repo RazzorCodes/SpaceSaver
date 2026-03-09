@@ -372,27 +372,30 @@ input[type="checkbox"] {
     font-weight: 600;
 }
 
-.status-badge.OPTIMUM {
+.status-badge.optimum,
+.status-badge.done {
     background: rgba(16, 185, 129, 0.15);
     color: var(--accent-success);
 }
 
-.status-badge.PENDING {
+.status-badge.pending {
     background: rgba(148, 163, 184, 0.15);
     color: var(--text-primary);
 }
 
-.status-badge.IN_PROGRESS {
+.status-badge.in-progress,
+.status-badge.processing {
     background: rgba(59, 130, 246, 0.15);
     color: var(--accent-primary);
 }
 
-.status-badge.ERROR {
+.status-badge.error {
     background: rgba(239, 68, 68, 0.15);
     color: var(--accent-danger);
 }
 
-.status-badge.UNSUPPORTED {
+.status-badge.unsupported,
+.status-badge.aborted {
     background: rgba(245, 158, 11, 0.15);
     color: var(--accent-warning);
 }
@@ -903,7 +906,7 @@ input[type="checkbox"] {
 }
 
 .form-group select {
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='rgba(148, 163, 184, 0.8)' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+    background-image: url('data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="rgba(148, 163, 184, 0.8)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"%3E%3Cpolyline points="6 9 12 15 18 9"%3E%3C/polyline%3E%3C/svg%3E');
     background-repeat: no-repeat;
     background-position: right 0.75rem center;
     background-size: 1.2rem;

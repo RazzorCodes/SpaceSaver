@@ -20,7 +20,7 @@ services:
   spacesaver-transcode:
     build:
       context: ../transcoder/app
-      dockerfile: ../containerfile/spacesaver-transcode
+      dockerfile: ../transcoder/containerfile/spacesaver-transcode
     container_name: spacesaver-transcode
     ports:
       - "8000:8000"

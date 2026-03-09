@@ -95,7 +95,13 @@ class EndpointModule(Module[State]):
             self.module_bus["worker"].submit(activity)
 
             # Wait for the worker thread to resolve the future
-            return await future
+            try:
+                return await asyncio.wait_for(future, timeout=30.0)
+            except asyncio.TimeoutError:
+                return JSONResponse(
+                    status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+                    content={"message": "Request timed out"},
+                )
 
         @self._app.get("/status")
         async def get_status():

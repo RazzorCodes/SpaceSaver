@@ -36,10 +36,11 @@ class State(StrEnum):
 
 
 class DatabaseModule(Module[State]):
-    _database: Database
+    _database: Database | None
 
     def __init__(self):
         super().__init__(State.UNKNOWN)
+        self._database = None
 
     @override
     def setup(self, config: AppConfig) -> bool:
@@ -61,10 +62,11 @@ class DatabaseModule(Module[State]):
             logger.info(f"Setting up database module from path {db_path}")
             try:
                 db = Database(_db_path=db_path)
-            except Exception as ex:
-                logger.error(f"Could not retrieve database: {ex}")
+            except Exception:
+                self.state = State.ERROR
+                logger.exception("Could not retrieve database")
                 return False
-        elif self._database:
+        elif self._database is not None:
             db = self._database
         else:
             self.state = State.ERROR
@@ -100,5 +102,6 @@ class DatabaseModule(Module[State]):
 
     @override
     def shutdown(self, force: bool) -> bool:
-        self._database.close(force)
+        if self._database is not None:
+            self._database.close(force)
         return True
