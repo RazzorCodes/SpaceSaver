@@ -1,0 +1,17 @@
+name: spacesaver-local-nas
+
+services:
+  spacesaver:
+    build:
+      context: ../app
+      dockerfile: ../containerfile/spacesaver-transcode
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./tmp:/workdir:rw,z
+      - /mnt/nas-slow/media:/media:rw,z
+    environment:
+      - TV_CRF=18
+      - MOVIE_CRF=23
+      - TV_RES_CAP=1080
+      - MOVIE_RES_CAP=1080

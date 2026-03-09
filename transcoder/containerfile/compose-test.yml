@@ -1,0 +1,18 @@
+version: "3.8"
+name: compose-test
+
+services:
+  spacesaver:
+    build:
+      context: ../app
+      dockerfile: ../containerfile/sps-transcode-test
+    container_name: spacesaver-api
+    ports:
+      - "8000:8000"
+    volumes:
+      - ../app:/app:Z
+      - ${MEDIA_DIR:-../test-data/media}:/media:Z
+      - ../app:/storage/spacesaver-transcode:Z
+    environment:
+      - PYTHONPATH=/app/src
+    command: python src/app.py serve --reload

@@ -5,3 +5,5 @@
 *.mkv
 *.db
 settings.json
+*wal
+*shm

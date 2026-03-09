@@ -1,0 +1,31 @@
+# syntax=docker/dockerfile:1
+FROM python:3.14-slim AS base
+
+# Install ffmpeg (includes ffprobe) from Debian repos — cached layer
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ffmpeg && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY requirements.txt .
+
+RUN pip install --upgrade pip && \
+    pip install -r requirements.txt
+
+FROM base AS setup
+
+# Install Python dependencies (re-runs every build so new packages are picked up)
+COPY requirements.txt .
+RUN pip install --upgrade pip && \
+    pip install -r requirements.txt
+
+# Copy application source and tests
+COPY . .
+
+FROM setup AS app
+# Run the FastAPI application through the CLI orchestrator
+ENV PYTHONPATH=/app/src
+# Expose the HTTP API port
+EXPOSE 8000
+CMD ["python", "src/app.py", "serve"]

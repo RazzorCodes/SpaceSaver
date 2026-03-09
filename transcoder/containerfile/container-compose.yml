@@ -1,0 +1,18 @@
+name: spacesaver-e2e
+
+services:
+  spacesaver:
+    build:
+      context: ../app
+      dockerfile: ../containerfile/spacesaver-transcode
+    ports:
+      - "8000:8000"
+    volumes:
+      - ${WORKDIR_DIR:-../../test-data/spacesaver-transcode/workdir}:/workdir:rw,z
+      - ${MEDIA_DIR:-../../test-data/spacesaver-transcode/media}:/media:rw,z
+      - ${CACHE_DIR:-../../test-data/spacesaver-transcode/cache}:/cache:rw,z
+    environment:
+      - TV_CRF=23
+      - MOVIE_CRF=23
+      - TV_RES_CAP=1080
+      - MOVIE_RES_CAP=1080

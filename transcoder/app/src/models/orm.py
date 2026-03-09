@@ -1,0 +1,76 @@
+from enum import StrEnum
+
+from sqlalchemy import Column
+from sqlalchemy.types import JSON
+from sqlmodel import Field, Relationship, SQLModel, String, TypeDecorator
+
+
+class WorkItemStatus(StrEnum):
+    # --- not assigned ---
+    UNKNOWN = "unknown"
+    # --- assigned, not actively worked on ---
+    PENDING = "pending"
+    # --- in progress ---
+    PROCESSING = "processing"
+    # --- end state ---
+    DONE = "done"  # processed
+    ABORTED = "aborted"  # already optimal
+    ERROR = "error"  # failed
+
+
+class ResolutionDecorator(TypeDecorator[tuple[int, int]]):
+    impl = String
+    cache_ok = True
+
+    def __init__(self, separator: str = "x", *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.separator = separator
+
+    def process_bind_param(self, value, dialect):
+        if value is None:
+            return None
+        return f"{value[0]}{self.separator}{value[1]}"
+
+    def process_result_value(self, value, dialect):
+        if value is None:
+            return None
+        w, h = value.split(self.separator, 1)
+        return int(w), int(h)
+
+
+class Items(SQLModel, table=True):
+    id: int = Field(default=None, primary_key=True)
+    hash: str
+    name: str
+    path: str
+    status: WorkItemStatus = Field(default=WorkItemStatus.UNKNOWN)
+
+    # Reverse relationship to Metadata
+    metadata_item: "Metadata" = Relationship(back_populates="item")
+
+
+class Metadata(SQLModel, table=True):
+    id: int = Field(primary_key=True, foreign_key="items.id")
+
+    # --- file info ---
+    size: int = Field(default=0)
+
+    # --- media info ---
+    duration: float = Field(default=0.0)
+    # --- video ---
+    codec: str = Field(default="")
+    resolution: tuple[int, int] = Field(default=(0, 0), sa_type=ResolutionDecorator)
+    sar: str = Field(default="")
+    dar: str = Field(default="")
+    framerate: float = Field(default=0.0)
+    # --- audio ---
+    audio: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+
+    # --- database ---
+    item: "Items" = Relationship(back_populates="metadata_item")
+
+
+ALL_TABLES = [
+    Items,
+    Metadata,
+]

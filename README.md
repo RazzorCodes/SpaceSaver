@@ -1,76 +1,61 @@
 # SpaceSaver Transcode
 
-SpaceSaver is a Kubernetes-native media transcoder designed to automatically optimize your media library for space efficiency by converting videos to H.265 (HEVC) MKV format during system idle times.
+SpaceSaver is a media transcoder designed to automatically optimize your media library for space efficiency by converting videos to H.265 (HEVC) MKV format.
 
 ## Key Features
 
 - **Space Optimization**: Converts videos to H.265 using `libx265`, significantly reducing file size while maintaining high quality.
-- **Smart Decision Making**: Skips files that are already in HEVC format or have a bitrate below a certain threshold to avoid wasteful re-encoding.
-- **Kubernetes Native**: Designed to run as a Deployment with `idle-priority`, ensuring it only uses CPU cycles when the node is otherwise idle.
-- **Live Mutable Configuration**: Update CRF (Constant Rate Factor) and resolution caps at runtime via API without restarting the pod.
-- **REST API**: Simple interface for monitoring status, listing files, and manual enqueueing.
+- **Background Orchestration**: Smart thread pooling through a central Governor ensures background tasks don't block the API.
+- **REST API**: Simple interface for monitoring status, scanning media, and enqueuing files for transcode.
+- **SQLite Database Tracking**: Tracks file metadata, resolution, duration, codec, and status (UNKNOWN, PENDING, PROCESSING, DONE, ERROR, ABORTED).
+- **Graceful Shutdowns & Safety**: Safe against early termination with proper task cleanup and temporary intermediate files to prevent corrupting source media.
 
-## Important note: Multiple services should not run concurrently due to SQLite database file locking & resulting duplicated work. 
-- As this was intended as a last-resort space saving tool, it is not designed to run on multiple nodes.
-- What it is really is a fancy ffmpeg call for very lazy people
-
-## Architecture
-
-SpaceSaver consists of:
-- **Flask API**: Handles incoming requests and provides status updates.
-- **Background Worker**: A dedicated thread that manages the transcode queue and executes `ffmpeg` jobs.
-- **SQLite Database**: Tracks file metadata, status (PENDING, QUEUED, IN_PROGRESS, DONE), and transcoding progress.
+## Important note: Multiple services should not run concurrently due to SQLite database file locking & resulting duplicated work.
+- It is not designed to run on multiple nodes or scale horizontally against a single SQLite instances.
+- What it is really is a fancy ffmpeg orchestrator for very lazy people.
 
 ## API Endpoints
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/version` | Returns the current application version. |
-| GET | `/status` | Returns the current transcoder status and progress of the active job. |
-| GET | `/list` | Lists all indexed files and their current status. |
-| GET | `/list/<uuid>` | Shows details for a specific file. |
-| POST | `/request/enqueue/best` | Automatically enqueues the "best" candidate for transcoding (largest non-optimized file). |
-| POST | `/request/enqueue/<uuid>` | Enqueues a specific file by its UUID. |
+| GET | `/version` | Returns the current application version container label. |
+| GET | `/status` | Returns the current transcoder status and live frame progress of active transcode jobs. |
+| GET | `/list` | Lists all indexed files. |
+| PUT | `/process/{hash}` | Pushes a target media file (identified by hash) to the transcode queue. |
+| PUT | `/scan` | Triggers a quick or deep probe scan over the media path configuration folder to identify eligible files. |
+| DELETE | `/cancel/{uuid}` | Instantly aborts a running Scan or Transcode activity by its task UUID. |
 
 ## Configuration
 
-Configuration is loaded from environment variables (typically via a Kubernetes ConfigMap):
+Configuration is loaded from environment variables (powered by `pydantic_settings`):
 
-- `TV_CRF`: Default CRF for TV shows (Default: `18`).
-- `MOVIE_CRF`: Default CRF for movies (Default: `16`).
-- `TV_RES_CAP`: Resolution cap for TV shows (e.g., `1080`).
-- `MOVIE_RES_CAP`: Resolution cap for movies (e.g., `2160`).
+- `APP_HOST`: The host interface to bind the API (Default: `0.0.0.0`).
+- `APP_PORT`: The HTTP port for the API (Default: `8000`).
+- `MEDIA_PATH`: The directory containing the multimedia library (Default: `/media`).
+- `DB_PATH`: The SQLite database location (Default: `/storage/spacesaver-transcode/main.db`).
 
 ## Setup and Deployment
 
 ### Prerequisites
-- A Kubernetes cluster.
-- `kubectl` configured.
-- NFS storage accessible by the cluster for `/source` and `/dest`.
+- Container runtime (Podman or Docker)
+- NFS or local storage accessible by the container for `/media` and `/storage`.
 
 ### Build and Push
-Use the provided scripts to build and upload the container image to your local registry:
+Use the provided script to increment the version, build the container image, and seamlessly push it to your local registry.
+
 ```bash
-./spacesaver-transcode/build.sh
-./spacesaver-transcode/upload-container.sh
+cd transcoder
+./build.sh --registry zot.lan:5000
 ```
+*(The build script automatically sources `upload-container.sh` to mirror `latest` and versioned tags).*
 
-### Deploy to Kubernetes
-Deploy to Kubernetes using the `deploy-full.sh` script:
+### Local Container Deployment (Podman / Docker)
+
+1. Ensure your volumes are mapped properly for your media library configuration.
+2. Spin up the test environment:
 ```bash
-./spacesaver-transcode/deploy-full.sh
-```
-
-### Container Deployment (Docker / Podman Compose)
-SpaceSaver can also be deployed as a pure container without Kubernetes. A sample `docker-compose.yml` is provided in the `spacesaver-transcode/test` directory.
-
-To run with Compose:
-1. Ensure `ffmpeg` is available in your container environment (the build process handles this).
-2. Configure your volumes to point to your media library.
-3. Run the following:
-```bash
-cd spacesaver-transcode/test
-podman-compose up -d  # or docker-compose up -d
+cd transcoder/test
+podman-compose up -d  # or docker compose up -d
 ```
 
 ## License
