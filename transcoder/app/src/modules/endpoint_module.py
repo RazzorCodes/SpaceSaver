@@ -1,11 +1,10 @@
 import asyncio
+import json
+import threading
+import uuid
 from enum import StrEnum
 from typing import override
 
-from activities.list_activity import ListActivity
-from activities.scan_activity import ScanActivity
-from activities.status_activity import StatusActivity
-from activities.transcode_activity import TranscodeActivity
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 from misc.logger import logger
@@ -18,7 +17,7 @@ from models.quality import (
     load_quality,
     save_quality,
 )
-from modules.module import Module, Stage
+from modules.module import BusMessage, Module, Stage
 from pydantic import BaseModel
 
 
@@ -46,12 +45,11 @@ class State(StrEnum):
 class EndpointModule(Module[State]):
     def __init__(self):
         super().__init__(State.UNKNOWN)
-        self._app_host: str
-        self._app_port: int
         self._serving: bool = False
+        self._pending: dict[str, asyncio.Future] = {}
+        self._pending_lock = threading.Lock()
 
         self._app = FastAPI()
-
         self._setup_routes()
         self._create_middleware()
 
@@ -74,6 +72,33 @@ class EndpointModule(Module[State]):
                 )
             return await call_next(request)
 
+    def _on_response(self, msg: BusMessage) -> None:
+        corr_id = msg.get_labels()[1]
+        with self._pending_lock:
+            future = self._pending.pop(corr_id, None)
+        if future is None or future.done():
+            return
+        payload = json.loads(msg.get_bytes())
+        if isinstance(payload, dict) and "__error__" in payload:
+            future.get_loop().call_soon_threadsafe(
+                future.set_exception, RuntimeError(payload["__error__"])
+            )
+        else:
+            future.get_loop().call_soon_threadsafe(future.set_result, payload)
+
+    async def _query(self, label: str) -> object:
+        corr_id = uuid.uuid4().hex[:8]
+        future = asyncio.get_running_loop().create_future()
+        with self._pending_lock:
+            self._pending[corr_id] = future
+        self._send([label, corr_id])
+        try:
+            return await asyncio.wait_for(future, timeout=30.0)
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            with self._pending_lock:
+                self._pending.pop(corr_id, None)
+            raise
+
     def _setup_routes(self):
         @self._app.get("/version")
         def get_version():
@@ -85,18 +110,8 @@ class EndpointModule(Module[State]):
 
         @self._app.get("/list")
         async def get_list():
-            loop = asyncio.get_running_loop()
-            future = loop.create_future()
-
-            activity = ListActivity()
-            activity.setup(
-                db=self.module_bus["database"]._database, result_future=future
-            )
-            self.module_bus["worker"].submit(activity)
-
-            # Wait for the worker thread to resolve the future
             try:
-                return await asyncio.wait_for(future, timeout=30.0)
+                return await self._query("list")
             except asyncio.TimeoutError:
                 return JSONResponse(
                     status_code=status.HTTP_504_GATEWAY_TIMEOUT,
@@ -105,53 +120,30 @@ class EndpointModule(Module[State]):
 
         @self._app.get("/status")
         async def get_status():
-            loop = asyncio.get_running_loop()
-            future = loop.create_future()
-
-            activity = StatusActivity()
-            activity.setup(
-                worker_module=self.module_bus["worker"], result_future=future
-            )
-            self.module_bus["worker"].submit(activity)
-
-            return await future
+            return await self._query("status")
 
         @self._app.put("/process/{hash}")
         async def process_hash(hash: str):
-            return await self._start_transcode(hash)
+            return self._start_transcode(hash)
 
-        @self._app.delete("/cancel/{uuid}")
-        async def cancel_task(uuid: str):
-            success = self.module_bus["worker"].cancel(uuid)
-            if success:
-                return {"message": f"Task {uuid} cancelled"}
-            else:
-                return JSONResponse(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    content={"message": f"Task {uuid} not found"},
-                )
+        @self._app.delete("/cancel/{task_uuid}")
+        async def cancel_task(task_uuid: str):
+            self._send(["cancel", task_uuid])
+            return {"message": f"Cancel requested for task {task_uuid}"}
 
         @self._app.put("/scan")
         async def start_scan():
-            activity = ScanActivity()
-            scan_path = self.module_bus["config"].media_path
-            if not activity.setup(
-                db=self.module_bus["database"]._database,
-                path=scan_path,
-                probe=True,
-            ):
-                return JSONResponse(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    content={"message": f"Failed to setup scan for {scan_path}"},
-                )
-
-            task_id = self.module_bus["worker"].submit(activity)
+            task_id = f"scan_{uuid.uuid4().hex[:8]}"
+            params = json.dumps({
+                "path": str(self._config.media_path),
+                "probe": True,
+            }).encode()
+            self._send(["scan", task_id], params)
             return {"task": task_id}
 
         @self._app.get("/quality")
         def get_quality():
-            cache_path = self.module_bus["config"].cache_path
-            state = load_quality(cache_path)
+            state = load_quality(self._config.cache_path)
             return state.model_dump()
 
         class QualityBody(BaseModel):
@@ -160,8 +152,6 @@ class EndpointModule(Module[State]):
 
         @self._app.post("/quality")
         def set_quality(body: QualityBody):
-            cache_path = self.module_bus["config"].cache_path
-
             if body.preset and body.custom:
                 return JSONResponse(
                     status_code=status.HTTP_400_BAD_REQUEST,
@@ -186,42 +176,22 @@ class EndpointModule(Module[State]):
                     settings=body.custom,  # type: ignore[arg-type]
                 )
 
-            save_quality(cache_path, state)
+            save_quality(self._config.cache_path, state)
             logger.info(
                 f"Quality updated: preset={state.active_preset}, crf={state.settings.crf}"
             )
             return state.model_dump()
 
-
-    async def _start_transcode(
-        self,
-        hash: str,
-        quality: QualitySettings | None = None,
-    ):
-        config: AppConfig = self.module_bus["config"]
-        activity = TranscodeActivity()
-        if not activity.setup(
-            db=self.module_bus["database"]._database,
-            hash=hash,
-            quality=quality,
-            cache_path=config.cache_path,
-        ):
-            return JSONResponse(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                content={"message": f"Failed to setup transcode for {hash}"},
-            )
-
-        task_id = self.module_bus["worker"].submit(activity)
+    def _start_transcode(self, hash: str) -> dict:
+        task_id = f"tran_{uuid.uuid4().hex[:8]}"
+        self._send(["transcode", task_id, hash])
         return {"task": task_id}
 
     @override
-    def setup(self, config: AppConfig, module_bus: dict | None = None) -> bool:
+    def setup(self, config: AppConfig) -> bool:
         logger.info("Setting up endpoint module")
-        self._app_host = config.app_host
-        self._app_port = config.app_port
-
-        self.module_bus = module_bus or {}
-
+        self._config = config
+        self._register_consumer(self._on_response, ["response"])
         self.state = State.READY
         logger.info(
             "Endpoint module ready (waiting for server orchestration if applicable)."
@@ -230,8 +200,14 @@ class EndpointModule(Module[State]):
 
     @override
     def shutdown(self, force: bool) -> bool:
-        """Cleanup specific endpoint module states."""
         logger.info("Shutting down Endpoint module...")
         self.state = State.UNKNOWN
         self._serving = False
+        with self._pending_lock:
+            for future in self._pending.values():
+                if not future.done():
+                    future.get_loop().call_soon_threadsafe(
+                        future.set_exception, asyncio.CancelledError()
+                    )
+            self._pending.clear()
         return True

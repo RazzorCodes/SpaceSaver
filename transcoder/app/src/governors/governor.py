@@ -1,3 +1,7 @@
+import threading
+
+import jackfield
+
 from misc.logger import logger
 from models.config import AppConfig
 from modules.database_module import DatabaseModule
@@ -27,19 +31,20 @@ class Governor:
         return False
 
     def setup(self) -> None:
-        """Initializes the database and marks the Governor as ready."""
+        """Initializes modules and wires them together via a shared message bus."""
         self._ready = True
+
+        bus = jackfield.MessageBus()
+        bus_lock = threading.Lock()
+        for mod in (self._db_mod, self._wk_mod, self._ep_mod):
+            mod.attach_bus(bus, bus_lock)
+
         self._ready &= self._db_mod.setup(self._config)
-        self._ready &= self._wk_mod.setup(self._config)
-        
-        # Inject only the necessary references as a dictionary bus
-        module_bus = {
-            "worker": self._wk_mod,
-            "database": self._db_mod,
-            "config": self._config,
-        }
-        self._ready &= self._ep_mod.setup(self._config, module_bus=module_bus)
+        self._ready &= self._wk_mod.setup(self._config, self._db_mod)
+        self._ready &= self._ep_mod.setup(self._config)
+
         if self._ready:
+            self._wk_mod.start_drain()
             logger.info("Governor setup complete and ready.")
         else:
             logger.error("Governor setup failed.")
