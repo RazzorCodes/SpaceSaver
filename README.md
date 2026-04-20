@@ -1,63 +1,91 @@
-# HomeReef Transcode
+# HomeReef
 
-HomeReef is a media transflux designed to automatically optimize your media library for space efficiency by converting videos to H.265 (HEVC) MKV format.
+HomeReef is an automated media transcode suite designed to optimize your media library for space efficiency by converting videos to H.265 (HEVC) MKV format.
 
-## Key Features
+The project consists of two main components:
+- **Transflux**: The heavy-lifting backend engine that orchestrates media scanning and transcoding.
+- **Seaglass**: A modern web-based dashboard for monitoring and managing your HomeReef instance.
 
-- **Space Optimization**: Converts videos to H.265 using `libx265`, significantly reducing file size while maintaining high quality.
-- **Background Orchestration**: Smart thread pooling through a central Governor ensures background tasks don't block the API.
-- **REST API**: Simple interface for monitoring status, scanning media, and enqueuing files for transcode.
-- **SQLite Database Tracking**: Tracks file metadata, resolution, duration, codec, and status (UNKNOWN, PENDING, PROCESSING, DONE, ERROR, ABORTED).
-- **Graceful Shutdowns & Safety**: Safe against early termination with proper task cleanup and temporary intermediate files to prevent corrupting source media.
+## Project Structure
 
-## Important note: Multiple services should not run concurrently due to SQLite database file locking & resulting duplicated work.
-- It is not designed to run on multiple nodes or scale horizontally against a single SQLite instances.
-- What it is really is a fancy ffmpeg orchestrator for very lazy people.
+- `transflux/`: The core transcoding engine (FastAPI + Jackfield message bus).
+- `seaglass/`: The web user interface (Flask + Vanilla JS).
+- `containerfiles/`: Orchestration configurations (Docker Compose).
+- `test-data/`: Sample data and environment for testing.
 
-## API Endpoints
+---
+
+## Transflux (Backend)
+
+Transflux is a "fancy ffmpeg orchestrator" that manages a queue of transcode jobs, tracks file metadata in a SQLite database, and ensures background tasks don't interfere with the responsiveness of the system.
+
+### Key Features
+- **Space Optimization**: Converts videos to H.265 using `libx265` and Matroska (MKV) containers.
+- **Background Orchestration**: Smart thread pooling through a central Governor ensures API responsiveness.
+- **REST API**: Full programmatic control over status, scanning, and transcoding.
+- **SQLite Tracking**: Persistent state tracking for all media files (Hash-based indexing).
+- **Configurable Quality**: Support for built-in presets (Low, Mid, High) or custom CRF/preset settings via TOML persistence.
+
+### API Endpoints
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/version` | Returns the current application version container label. |
-| GET | `/status` | Returns the current transflux status and live frame progress of active transcode jobs. |
-| GET | `/list` | Lists all indexed files. |
-| PUT | `/process/{hash}` | Pushes a target media file (identified by hash) to the transcode queue. |
-| PUT | `/scan` | Triggers a quick or deep probe scan over the media path configuration folder to identify eligible files. |
-| DELETE | `/cancel/{uuid}` | Instantly aborts a running Scan or Transcode activity by its task UUID. |
+| GET | `/version` | Returns the current Transflux version. |
+| GET | `/status` | Returns live progress of active jobs and system status. |
+| GET | `/list` | Lists all indexed media files and their status. |
+| PUT | `/process/{hash}` | Enqueues a file (by hash) for transcoding. |
+| PUT | `/scan` | Triggers a scan of the `MEDIA_PATH`. |
+| DELETE | `/cancel/{uuid}` | Aborts a running task by its UUID. |
+| GET | `/quality` | Retrieves current quality settings and presets. |
+| POST | `/quality` | Updates quality settings (preset or custom). |
 
-## Configuration
+---
 
-Configuration is loaded from environment variables (powered by `pydantic_settings`):
+## Seaglass (Web UI)
 
-- `APP_HOST`: The host interface to bind the API (Default: `0.0.0.0`).
-- `APP_PORT`: The HTTP port for the API (Default: `8000`).
-- `MEDIA_PATH`: The directory containing the multimedia library (Default: `/media`).
-- `DB_PATH`: The SQLite database location (Default: `/storage/homereef-transflux/main.db`).
+Seaglass provides a user-friendly interface to interact with Transflux without using the CLI or API directly.
 
-## Setup and Deployment
+### Features
+- **Dashboard**: Real-time progress bars for active transcodes.
+- **Library Browser**: Search and filter your media library, view transcode status.
+- **One-Click Transcode**: Trigger processing for any file in the library.
+- **Quality Management**: Switch between quality presets directly from the dashboard.
 
-### Prerequisites
-- Container runtime (Podman or Docker)
-- NFS or local storage accessible by the container for `/media` and `/storage`.
+---
 
-### Build and Push
-Use the provided script to increment the version, build the container image, and seamlessly push it to your local registry.
+## Setup & Deployment
 
-```bash
-cd transflux
-./build.sh --registry zot.lan:5000
-```
-*(The build script automatically sources `upload-container.sh` to mirror `latest` and versioned tags).*
+The easiest way to run HomeReef is using Docker Compose.
 
-### Local Container Deployment (Podman / Docker)
+### Quick Start (Local)
 
-1. Ensure your volumes are mapped properly for your media library configuration.
-2. Spin up the test environment:
-```bash
-cd transflux/test
-podman-compose up -d  # or docker compose up -d
-```
+1. Clone the repository.
+2. Configure your media directory:
+   ```bash
+   export MEDIA_DIR=/path/to/your/videos
+   ```
+3. Launch the stack:
+   ```bash
+   cd containerfiles
+   docker-compose up -d
+   ```
+4. Access the UI at `http://localhost:5000` and the API at `http://localhost:8000`.
+
+### Configuration
+
+Both services are configured via environment variables:
+
+**Transflux:**
+- `MEDIA_PATH`: Root directory of your media library (Default: `/media`).
+- `DB_PATH`: Path to the SQLite database (Default: `/storage/homereef-transflux/main.db`).
+- `CACHE_PATH`: Path for persistent quality settings and cache (Default: `/cache`).
+- `APP_PORT`: Port to bind the API (Default: `8000`).
+
+**Seaglass:**
+- `TRANSFLUX_URL`: URL where Seaglass can reach Transflux (Default: `http://homereef-transflux:8000`).
+
+---
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
