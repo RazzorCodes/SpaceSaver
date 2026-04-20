@@ -30,7 +30,7 @@ class Governor:
             return True
         return False
 
-    def setup(self) -> None:
+    async def setup(self) -> None:
         """Initializes modules and wires them together via a shared message bus."""
         self._ready = True
 
@@ -39,9 +39,9 @@ class Governor:
         for mod in (self._db_mod, self._wk_mod, self._ep_mod):
             mod.attach_bus(bus, bus_lock)
 
-        self._ready &= self._db_mod.setup(self._config)
-        self._ready &= self._wk_mod.setup(self._config, self._db_mod)
-        self._ready &= self._ep_mod.setup(self._config)
+        self._ready &= await self._db_mod.setup(self._config)
+        self._ready &= await self._wk_mod.setup(self._config, self._db_mod)
+        self._ready &= await self._ep_mod.setup(self._config)
 
         if self._ready:
             self._wk_mod.start_drain()
@@ -53,9 +53,9 @@ class Governor:
     def ready(self) -> bool:
         return self._ready
 
-    def shutdown(self) -> None:
+    async def shutdown(self) -> None:
         """Cleanly aborts all running tasks and shuts down the thread pool."""
         logger.info("Shutting down Governor")
-        self._wk_mod.shutdown(True)
-        self._db_mod.shutdown(True)
-        self._ep_mod.shutdown(True)
+        await self._wk_mod.shutdown(True)
+        await self._db_mod.shutdown(True)
+        await self._ep_mod.shutdown(True)

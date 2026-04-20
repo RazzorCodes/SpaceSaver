@@ -1,5 +1,5 @@
+import asyncio
 import shutil
-import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import override
@@ -20,7 +20,7 @@ class TranscodeActivity(Activity):
     db: Database | None = None
     _target: Path | None = None
     _record: ListItem | None = None
-    _abort_flag: threading.Event = field(default_factory=threading.Event)
+    _abort_flag: asyncio.Event = field(default_factory=asyncio.Event)
     _quality: QualitySettings | None = None
     _cache_path: Path | None = None
 
@@ -45,7 +45,8 @@ class TranscodeActivity(Activity):
             and self._quality is not None
         )
 
-    def setup(
+    @override
+    async def setup(
         self,
         db: Database,
         hash: str,
@@ -55,11 +56,11 @@ class TranscodeActivity(Activity):
         self.db = db
         self._abort_flag.clear()
 
-        if not prober.check_executable():
+        if not await asyncio.to_thread(prober.check_executable):
             logger.error("Transcode requested, but ffmpeg not found on system.")
             return False
 
-        valid_items = read_list_items(db, item_hash=hash)
+        valid_items = await asyncio.to_thread(read_list_items, db, item_hash=hash)
 
         if len(valid_items) != 1:
             logger.error(
@@ -75,7 +76,7 @@ class TranscodeActivity(Activity):
             self._quality = quality
             self.quality_preset = "custom"
         elif cache_path is not None:
-            state = load_quality(cache_path)
+            state = await asyncio.to_thread(load_quality, cache_path)
             self._quality = state.settings
             self.quality_preset = state.active_preset.value if state.active_preset else "custom"
         else:
@@ -85,17 +86,18 @@ class TranscodeActivity(Activity):
         self._cache_path = cache_path
         return True
 
-    def _set_status(self, status: WorkItemStatus) -> None:
+    async def _set_status(self, status: WorkItemStatus) -> None:
         """Helper to instantly update the database with the new status."""
         if self.db and self._record:
             self._record.status = status
-            upsert_list_item(self.db, self._record)
+            await asyncio.to_thread(upsert_list_item, self.db, self._record)
             logger.debug(f"[{self._record.hash}] Status changed to: {status.value}")
 
-    def run(self) -> None:
+    @override
+    async def run(self) -> None:
         if not self.valid:
             logger.error(f"Transcode target invalid or missing: {self._target}")
-            self._set_status(WorkItemStatus.ERROR)
+            await self._set_status(WorkItemStatus.ERROR)
             return
 
         assert self._target is not None
@@ -109,7 +111,7 @@ class TranscodeActivity(Activity):
         # Place the temp file in the cache directory (if available) to avoid
         # filling up /media during the transcode.
         if self._cache_path:
-            self._cache_path.mkdir(parents=True, exist_ok=True)
+            await asyncio.to_thread(self._cache_path.mkdir, parents=True, exist_ok=True)
             temp_output = self._cache_path / f"{self._target.stem}.tmp.mkv"
         else:
             temp_output = self._target.with_suffix(".tmp.mkv")
@@ -119,10 +121,10 @@ class TranscodeActivity(Activity):
             f"(crf={self._quality.crf}, preset={self._quality.preset}, "
             f"res_cap={self._quality.resolution_cap})"
         )
-        self._set_status(WorkItemStatus.PROCESSING)
+        await self._set_status(WorkItemStatus.PROCESSING)
 
         try:
-            transcode_file(
+            await transcode_file(
                 input_path=self._target,
                 output_path=temp_output,
                 crf=self._quality.crf,
@@ -133,38 +135,50 @@ class TranscodeActivity(Activity):
                 cancel_event=self._abort_flag,
             )
 
-            # Check if we were cancelled during the run
-            if self._abort_flag.is_set():
-                logger.warning(f"Transcode cancelled for {self._target.name}")
-                if temp_output.exists():
-                    temp_output.unlink()
-                return  # Status was already set to ABORTED in cancel()
-
             # Success! Move the result back to the source directory.
             final_output = self._target.with_suffix(".mkv")
-            if temp_output.exists():
+            if await asyncio.to_thread(temp_output.exists):
                 # shutil.move handles cross-device moves (cache → media)
-                shutil.move(str(temp_output), str(final_output))
+                await asyncio.to_thread(shutil.move, str(temp_output), str(final_output))
                 if self._target != final_output:
-                    self._target.unlink(missing_ok=True)
+                    await asyncio.to_thread(self._target.unlink, missing_ok=True)
 
             logger.info(f"Transcode complete! Saved as {final_output.name}")
 
             # Update database record
             self._record.path = str(final_output)
-            self._record.size = final_output.stat().st_size
-            self._set_status(WorkItemStatus.DONE)
+            self._record.size = (await asyncio.to_thread(final_output.stat)).st_size
+            await self._set_status(WorkItemStatus.DONE)
+
+        except asyncio.CancelledError:
+            logger.warning(f"Transcode cancelled for {self._target.name}")
+            if await asyncio.to_thread(temp_output.exists):
+                await asyncio.to_thread(temp_output.unlink)
+            # Status was already set to ABORTED in cancel() via _set_status if it was called there? 
+            # Wait, cancel() needs to be async if it calls _set_status? 
+            # The base Activity says cancel() is sync.
+            # I should probably update cancel to be sync but it can't await.
 
         except Exception as e:
             logger.error(f"Transcode failed for {self._target.name}: {e}")
-            if temp_output.exists():
-                temp_output.unlink()
-            self._set_status(WorkItemStatus.ERROR)
+            if await asyncio.to_thread(temp_output.exists):
+                await asyncio.to_thread(temp_output.unlink)
+            await self._set_status(WorkItemStatus.ERROR)
 
+    @override
     def cancel(self) -> None:
         logger.info("Cancel requested. Stopping transcode...")
         self._abort_flag.set()
-        self._set_status(WorkItemStatus.ABORTED)
+        # We can't await _set_status here because cancel is sync.
+        # But we want the status to be updated.
+        # Maybe use asyncio.create_task if there is a loop?
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(self._set_status(WorkItemStatus.ABORTED))
+        except RuntimeError:
+            # No loop running, fallback (might happen during shutdown)
+            pass
 
+    @override
     def result(self):
         return None

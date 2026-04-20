@@ -15,11 +15,11 @@ def asgi_factory():
     @asynccontextmanager
     async def lifespan(app):
         # Startup
-        gov.setup()
+        await gov.setup()
         gov.start_endpoint()
         yield
         # Shutdown
-        gov.shutdown()
+        await gov.shutdown()
 
     app = gov.api_app
     app.router.lifespan_context = lifespan
@@ -55,13 +55,21 @@ if __name__ == "__main__":
         )
     else:
         # 2. Run Headless
+        import asyncio
         config = AppConfig()
         gov = Governor(config)
 
-        gov.setup()
+        async def run_headless():
+            await gov.setup()
+            try:
+                while True:
+                    await asyncio.sleep(1)
+            except asyncio.CancelledError:
+                pass
+            finally:
+                await gov.shutdown()
+
         try:
-            while True:
-                time.sleep(1)
+            asyncio.run(run_headless())
         except KeyboardInterrupt:
             print("\nCtrl+C received! Shutting down...")
-            gov.shutdown()

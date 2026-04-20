@@ -188,7 +188,7 @@ class EndpointModule(Module[State]):
         return {"task": task_id}
 
     @override
-    def setup(self, config: AppConfig) -> bool:
+    async def setup(self, config: AppConfig) -> bool:
         logger.info("Setting up endpoint module")
         self._config = config
         self._register_consumer(self._on_response, ["response"])
@@ -199,7 +199,7 @@ class EndpointModule(Module[State]):
         return True
 
     @override
-    def shutdown(self, force: bool) -> bool:
+    async def shutdown(self, force: bool) -> bool:
         logger.info("Shutting down Endpoint module...")
         self.state = State.UNKNOWN
         self._serving = False

@@ -1,7 +1,3 @@
-"""
-An <Activity> handles a shoot-and-forget flow for a <sub-governor>.
-"""
-
 from abc import ABC, abstractmethod
 
 
@@ -17,11 +13,11 @@ class Activity(ABC):
         pass
 
     @abstractmethod
-    def setup(self, *args, **kwargs) -> bool:
+    async def setup(self, *args, **kwargs) -> bool:
         pass
 
     @abstractmethod
-    def run(self) -> None:
+    async def run(self) -> None:
         pass
 
     @abstractmethod

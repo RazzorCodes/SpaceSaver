@@ -1,15 +1,15 @@
-import subprocess
-import threading
+import asyncio
 from pathlib import Path
 from typing import Callable
 
 import ffmpeg
 
 
-def get_total_frames(input_path: str | Path) -> int:
+async def get_total_frames(input_path: str | Path) -> int:
     """Helper: Uses ffprobe to estimate total video frames for progress percentage."""
     try:
-        probe = ffmpeg.probe(str(input_path))
+        # ffmpeg.probe is synchronous, run in thread
+        probe = await asyncio.to_thread(ffmpeg.probe, str(input_path))
         video_streams = [
             s for s in probe.get("streams", []) if s.get("codec_type") == "video"
         ]
@@ -35,7 +35,7 @@ def get_total_frames(input_path: str | Path) -> int:
         return 0
 
 
-def transcode_file(
+async def transcode_file(
     input_path: Path | str,
     output_path: Path | str,
     video_codec: str = "libx265",
@@ -45,16 +45,16 @@ def transcode_file(
     audio_bitrate: str = "192k",
     resolution_cap: int | None = None,
     progress_callback: Callable[[float, int, int], None] | None = None,
-    cancel_event: threading.Event | None = None,
+    cancel_event: asyncio.Event | None = None,
 ) -> None:
     """
-    Transcodes a media file using ffmpeg. Blocks until complete.
+    Transcodes a media file using ffmpeg. Non-blocking async implementation.
     Reports real-time progress via the provided callback function.
     """
     input_str = str(input_path)
     output_str = str(output_path)
 
-    total_frames = get_total_frames(input_str)
+    total_frames = await get_total_frames(input_str)
 
     cmd = [
         "ffmpeg",
@@ -92,54 +92,58 @@ def transcode_file(
     if resolution_cap:
         cmd += ["-vf", f"scale=-2:{resolution_cap}"]
 
-    # 1. Launch ffmpeg
-    process = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        universal_newlines=True,
-        bufsize=1,
+    # Launch ffmpeg
+    process = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
     )
 
-    # 2. Dedicated killer function to watch the abort flag
-    def kill_if_cancelled():
-        while process.poll() is None:
-            if cancel_event and cancel_event.wait(timeout=0.5):
+    async def monitor_progress():
+        if process.stdout:
+            while True:
+                line_bytes = await process.stdout.readline()
+                if not line_bytes:
+                    break
+                line = line_bytes.decode().strip()
+                if line.startswith("frame="):
+                    try:
+                        frames_done = int(line.split("=", 1)[1].strip())
+                    except ValueError:
+                        continue
+
+                    if progress_callback:
+                        pct = (
+                            (frames_done / total_frames * 100.0)
+                            if total_frames > 0
+                            else 0.0
+                        )
+                        pct = min(99.9, pct)
+                        progress_callback(pct, frames_done, total_frames)
+
+    async def monitor_cancellation():
+        if cancel_event:
+            await cancel_event.wait()
+            if process.returncode is None:
                 process.kill()
-                break
 
-    # 3. Start the watcher immediately
-    if cancel_event:
-        killer_thread = threading.Thread(target=kill_if_cancelled, daemon=True)
-        killer_thread.start()
+    # Run progress monitor and cancellation monitor concurrently
+    monitor_task = asyncio.create_task(monitor_progress())
+    cancel_task = asyncio.create_task(monitor_cancellation())
 
-    # 4. Progress loop
-    if process.stdout:
-        for line in process.stdout:
-            line = line.strip()
-            if line.startswith("frame="):
-                try:
-                    frames_done = int(line.split("=", 1)[1].strip())
-                except ValueError:
-                    continue
+    try:
+        await process.wait()
+    finally:
+        monitor_task.cancel()
+        cancel_task.cancel()
 
-                if progress_callback:
-                    pct = (
-                        (frames_done / total_frames * 100.0)
-                        if total_frames > 0
-                        else 0.0
-                    )
-                    pct = min(99.9, pct)
-                    progress_callback(pct, frames_done, total_frames)
-
-    process.wait()
-
-    # 5. Check exit states
+    # Check exit states
     if cancel_event and cancel_event.is_set():
-        raise InterruptedError("Transcoding was cancelled.")
+        raise asyncio.CancelledError("Transcoding was cancelled.")
 
     if process.returncode != 0:
-        stderr_out = process.stderr.read() if process.stderr else "Unknown error"
+        stderr_bytes = await process.stderr.read() if process.stderr else b""
+        stderr_out = stderr_bytes.decode()
         raise RuntimeError(
             f"ffmpeg exited with code {process.returncode}:\n{stderr_out.strip()}"
         )

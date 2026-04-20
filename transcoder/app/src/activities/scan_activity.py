@@ -1,3 +1,4 @@
+import asyncio
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -22,7 +23,8 @@ class ScanActivity(Activity):
     db: Database | None = None
     _path: Path | None = None
     _probe: bool = False
-    _abort_flag: threading.Event = field(default_factory=threading.Event)
+    _abort_flag: asyncio.Event = field(default_factory=asyncio.Event)
+    _thread_abort_flag: threading.Event = field(default_factory=threading.Event)
 
     @property
     @override
@@ -33,23 +35,26 @@ class ScanActivity(Activity):
     def valid(self) -> bool:
         return bool(self._path and self._path.exists() and self.db is not None)
 
-    def setup(self, db: Database, path: Path, probe: bool = False) -> bool:
+    @override
+    async def setup(self, db: Database, path: Path, probe: bool = False) -> bool:
         self.db = db
         self._path = path
         self._probe = probe
         self._abort_flag.clear()
+        self._thread_abort_flag.clear()
 
         if not path.exists():
             logger.warning(f"Scan activity set up with inexistent path: {self._path}")
             return False
 
-        if self._probe and not prober.check_executable():
+        if self._probe and not await asyncio.to_thread(prober.check_executable):
             logger.error("Probe was requested, but ffprobe executable was not found.")
             return False
 
         return True
 
-    def run(self) -> None:
+    @override
+    async def run(self) -> None:
         if not self.valid:
             logger.error("Scan activity invalid: Missing path or database")
             return
@@ -57,7 +62,7 @@ class ScanActivity(Activity):
         database = self.db
 
         def on_file_found(file_path: Path) -> None:
-            if self._abort_flag.is_set():
+            if self._thread_abort_flag.is_set():
                 return
 
             path_str = str(file_path)
@@ -75,7 +80,7 @@ class ScanActivity(Activity):
                 return
 
             try:
-                if self._probe and not self._abort_flag.is_set():
+                if self._probe and not self._thread_abort_flag.is_set():
                     record = prober.inspect(record)
             except Exception as e:
                 logger.error(f"Prober failed on file {path_str}: {e}")
@@ -93,10 +98,11 @@ class ScanActivity(Activity):
 
         logger.info(f"Starting scan on {self._path}")
 
-        files = list_path(
+        files = await asyncio.to_thread(
+            list_path,
             path=self._path,
             ext_wl=SCAN_FILES_EXTENSIONS,
-            cancel=self._abort_flag,
+            cancel=self._thread_abort_flag,
             on_item=on_file_found,
         )
 
@@ -107,10 +113,13 @@ class ScanActivity(Activity):
         else:
             logger.info(f"Scan complete. Found and processed {len(files)} files.")
 
+    @override
     def cancel(self) -> None:
-        """Triggers the abort flag, which tells the directory walker to stop."""
+        """Triggers the abort flags, which tells the directory walker to stop."""
         logger.info("Cancel requested. Stopping scan...")
         self._abort_flag.set()
+        self._thread_abort_flag.set()
 
+    @override
     def result(self):
         return None

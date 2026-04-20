@@ -70,11 +70,11 @@ class Module(ABC, Generic[T]):
         self._state = value
 
     @abstractmethod
-    def setup(self, config: AppConfig) -> bool:
+    async def setup(self, config: AppConfig) -> bool:
         pass
 
     @abstractmethod
-    def shutdown(self, force: bool) -> bool:
+    async def shutdown(self, force: bool) -> bool:
         pass
 
     @property

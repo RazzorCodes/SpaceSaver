@@ -1,3 +1,4 @@
+import asyncio
 from enum import StrEnum
 from pathlib import Path
 from typing import override
@@ -43,9 +44,9 @@ class DatabaseModule(Module[State]):
         self._database = None
 
     @override
-    def setup(self, config: AppConfig) -> bool:
+    async def setup(self, config: AppConfig) -> bool:
         logger.info("Setting up database module")
-        return self._setup(db_path=config.db_path or None)
+        return await asyncio.to_thread(self._setup, db_path=config.db_path or None)
 
     def _setup(
         self, db_path: Path | None = None, db_obj: Database | None = None
@@ -101,7 +102,7 @@ class DatabaseModule(Module[State]):
         return True
 
     @override
-    def shutdown(self, force: bool) -> bool:
+    async def shutdown(self, force: bool) -> bool:
         if self._database is not None:
-            self._database.close(force)
+            await asyncio.to_thread(self._database.close, force)
         return True

@@ -1,18 +1,14 @@
-import json
+import asyncio
 import threading
 import time
-import uuid
-from concurrent.futures import ThreadPoolExecutor
-from dataclasses import asdict
 from enum import StrEnum
 from typing import override
 
-from activities.scan_activity import ScanActivity
-from activities.transcode_activity import TranscodeActivity
-from data.db_op import read_list_items
+from activities.factory import ActivityFactory
 from misc.logger import logger
 from models.config import AppConfig
 from modules.module import BusMessage, Module, Stage
+from engine.executor import WorkExecutor, LightWorkExecutor, NetworkExecutor
 
 
 class State(StrEnum):
@@ -37,30 +33,66 @@ class WorkerModule(Module[State]):
     def __init__(self):
         super().__init__(State.UNKNOWN)
 
-        self._query_executor = ThreadPoolExecutor(max_workers=1)
-        self._work_executor = ThreadPoolExecutor(max_workers=1)
-        self._scan_executor = ThreadPoolExecutor(max_workers=1)
-        self._tasks_lock = threading.Lock()
         self.active_tasks: dict = {}
+        self._tasks_lock = threading.Lock()
+        
         self._shutdown_flag = threading.Event()
         self._drain_thread: threading.Thread | None = None
+        
         self._response_buffer: list[tuple[list[str], bytes]] = []
+        self._response_lock = threading.Lock()
+
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._factory: ActivityFactory | None = None
+
+        self._work_queue: asyncio.Queue = asyncio.Queue()
+        self._light_queue: asyncio.Queue = asyncio.Queue()
+        self._network_queue: asyncio.Queue = asyncio.Queue()
+
+        self._work_executor: WorkExecutor | None = None
+        self._light_executor: LightWorkExecutor | None = None
+        self._network_executor: NetworkExecutor | None = None
 
     @override
-    def setup(self, config: AppConfig, db_mod=None) -> bool:
+    async def setup(self, config: AppConfig, db_mod=None) -> bool:
         logger.info("Setting up worker module")
         self._config = config
         self._db = db_mod._database if db_mod is not None else None
+        
+        try:
+            self._loop = asyncio.get_running_loop()
+        except RuntimeError:
+            logger.error("WorkerModule must be set up within an asyncio loop")
+            return False
 
-        self._register_consumer(self._on_transcode, ["transcode"])
-        self._register_consumer(self._on_scan, ["scan"])
+        self._factory = ActivityFactory(
+            config=self._config,
+            db=self._db,
+            response_callback=self._queue_response,
+            active_tasks=self.active_tasks
+        )
+
+        self._work_executor = WorkExecutor(self._work_queue, max_workers=1)
+        self._light_executor = LightWorkExecutor(self._light_queue, max_workers=1)
+        self._network_executor = NetworkExecutor(self._network_queue, max_workers=5)
+
+        self._work_executor.start()
+        self._light_executor.start()
+        self._network_executor.start()
+
+        self._register_consumer(self._on_message, ["transcode"])
+        self._register_consumer(self._on_message, ["scan"])
+        self._register_consumer(self._on_message, ["list"])
+        self._register_consumer(self._on_message, ["status"])
         self._register_consumer(self._on_cancel, ["cancel"])
-        self._register_consumer(self._on_list, ["list"])
-        self._register_consumer(self._on_status, ["status"])
 
         self.state = State.READY
         logger.info("Worker module ready")
         return True
+
+    def _queue_response(self, labels: list[str], data: bytes) -> None:
+        with self._response_lock:
+            self._response_buffer.append((labels, data))
 
     def start_drain(self) -> None:
         self._drain_thread = threading.Thread(target=self._drain_loop, daemon=True, name="jackfield-drain")
@@ -69,49 +101,60 @@ class WorkerModule(Module[State]):
     def _drain_loop(self) -> None:
         while not self._shutdown_flag.is_set():
             self._drain()
-            # Send responses buffered during drain (can't call send() inside drain() — would re-borrow the bus)
-            for labels, data in self._response_buffer:
+            
+            with self._response_lock:
+                current_responses = list(self._response_buffer)
+                self._response_buffer.clear()
+                
+            for labels, data in current_responses:
                 self._send(labels, data)
-            self._response_buffer.clear()
+                
             time.sleep(0.005)
 
-    def _on_transcode(self, msg: BusMessage) -> None:
+    def _on_message(self, msg: BusMessage) -> None:
+        """Callback from Jackfield thread."""
+        if self._loop is None:
+            return
+        
         labels = msg.get_labels()
-        task_id = labels[1]
-        hash_val = labels[2]
+        data = msg.get_bytes()
+        
+        self._loop.call_soon_threadsafe(
+            lambda: asyncio.create_task(self._dispatch_message(labels, data))
+        )
 
-        activity = TranscodeActivity()
-        if not activity.setup(
-            db=self._db,
-            hash=hash_val,
-            quality=None,
-            cache_path=self._config.cache_path,
-        ):
-            logger.error(f"Failed to set up transcode activity for {hash_val}")
+    async def _dispatch_message(self, labels: list[str], data: bytes) -> None:
+        if not self._factory:
             return
 
-        with self._tasks_lock:
-            self.active_tasks[task_id] = activity
-        self._work_executor.submit(self._run_activity, task_id, activity)
-
-    def _on_scan(self, msg: BusMessage) -> None:
-        labels = msg.get_labels()
-        task_id = labels[1]
-        params = json.loads(msg.get_bytes())
-
-        from pathlib import Path
-        activity = ScanActivity()
-        if not activity.setup(
-            db=self._db,
-            path=Path(params["path"]),
-            probe=params.get("probe", False),
-        ):
-            logger.error(f"Failed to set up scan activity for {params['path']}")
+        result = await self._factory.create(labels, data)
+        if not result:
             return
-
+        
+        activity, task_id = result
+        
+        # Track activity
         with self._tasks_lock:
             self.active_tasks[task_id] = activity
-        self._scan_executor.submit(self._run_activity, task_id, activity)
+
+        # Wrap activity to remove from active_tasks on completion
+        original_run = activity.run
+        async def wrapped_run():
+            try:
+                await original_run()
+            finally:
+                with self._tasks_lock:
+                    self.active_tasks.pop(task_id, None)
+
+        activity.run = wrapped_run
+
+        # Route to appropriate queue
+        if activity.type == "tran":
+            await self._work_queue.put(activity)
+        elif activity.type == "scan":
+            await self._light_queue.put(activity)
+        elif activity.type in ("list", "status"):
+            await self._network_queue.put(activity)
 
     def _on_cancel(self, msg: BusMessage) -> None:
         task_id = msg.get_labels()[1]
@@ -123,64 +166,21 @@ class WorkerModule(Module[State]):
         else:
             logger.warning(f"Cancel requested for unknown task {task_id}")
 
-    def _on_list(self, msg: BusMessage) -> None:
-        corr_id = msg.get_labels()[1]
-        try:
-            items = read_list_items(self._db)
-            serialized = [asdict(item) for item in items]
-            data = json.dumps(serialized).encode()
-        except Exception as e:
-            logger.error(f"List query failed: {e}")
-            data = json.dumps({"__error__": str(e)}).encode()
-        self._response_buffer.append((["response", corr_id], data))
-
-    def _on_status(self, msg: BusMessage) -> None:
-        corr_id = msg.get_labels()[1]
-        try:
-            tasks = self.status()
-            result: dict = {}
-            for task_id, act in tasks.items():
-                entry: dict = {"type": act.type}
-                if act.type == "tran":
-                    entry["progress"] = {
-                        "percent": act.progress_percent,
-                        "current_frame": act.progress_current_frame,
-                        "total_frames": act.progress_total_frames,
-                    }
-                    if hasattr(act, "_record") and act._record:
-                        entry["name"] = act._record.name
-                    if hasattr(act, "quality_preset"):
-                        entry["quality_preset"] = act.quality_preset
-                elif act.type == "scan":
-                    entry["name"] = "Library Scan"
-                result[task_id] = entry
-            data = json.dumps(result).encode()
-        except Exception as e:
-            logger.error(f"Status query failed: {e}")
-            data = json.dumps({"__error__": str(e)}).encode()
-        self._response_buffer.append((["response", corr_id], data))
-
-    def status(self) -> dict:
-        with self._tasks_lock:
-            return dict(self.active_tasks)
-
-    def _run_activity(self, task_id: str, activity) -> None:
-        try:
-            activity.run()
-        except Exception as e:
-            logger.error(f"Task {task_id} crashed: {e}")
-        finally:
-            with self._tasks_lock:
-                self.active_tasks.pop(task_id, None)
-
     @override
-    def shutdown(self, force: bool) -> bool:
+    async def shutdown(self, force: bool) -> bool:
         self._shutdown_flag.set()
+        
         with self._tasks_lock:
             tasks = list(self.active_tasks.values())
         for task in tasks:
             task.cancel()
-        self._work_executor.shutdown(wait=False)
-        self._query_executor.shutdown(wait=False)
-        self._scan_executor.shutdown(wait=False)
+        
+        if self._loop:
+            if self._work_executor:
+                await self._work_executor.stop()
+            if self._light_executor:
+                await self._light_executor.stop()
+            if self._network_executor:
+                await self._network_executor.stop()
+        
         return True
