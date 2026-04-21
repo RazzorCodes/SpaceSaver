@@ -159,8 +159,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
             if (successCount > 0) {
                 showToast(`Successfully queued ${successCount} items`, 'success');
-                fetchLibrary(); // refresh status
-                fetchQueue();   // refresh queue
+                selectedHashes.clear();
+                fetchLibrary();
+                fetchQueue();
             }
 
             checkAll.checked = false;
@@ -620,7 +621,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 const infoStr = `${sizeStr} | ${durationStr} | ${mbsStr} | ${qualityStr} | ${codecStr} | ${resStr} | AR: ${arStr}`;
 
                 const statusUpper = status.toUpperCase();
-                const statusClass = status.toLowerCase().replace(/_/g, '-');
                 const displayName = item.name || (item.path ? item.path.split('/').pop() : 'Unknown');
 
                 tr.innerHTML = `
@@ -628,15 +628,11 @@ document.addEventListener('DOMContentLoaded', () => {
                     <td class="col-file" title="${item.path || ''}">
                         <div class="file-name-text">${displayName}</div>
                     </td>
-                    <td class="col-status"><span class="status-badge ${statusUpper}">${statusUpper}</span></td>
+                    <td class="col-status"><span class="status-badge ${status}">${statusUpper}</span></td>
                     <td class="col-info">${infoStr}</td>
                 `;
 
-                tr.querySelector('.col-file').textContent = displayName;
-                tr.querySelector('.col-file').title = item.path || '';
-                tr.querySelector('.col-info').textContent = `${sizeMb} | ${item.codec || '???'}`;
-
-                if (canTranscode) {
+                if (canTranscode && item.hash) {
                     const cb = tr.querySelector('.row-checkbox');
                     tr.addEventListener('click', (e) => {
                         if (e.target.tagName !== 'INPUT') {

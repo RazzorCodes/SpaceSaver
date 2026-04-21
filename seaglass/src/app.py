@@ -4,103 +4,62 @@ from flask import Flask, render_template, request, jsonify
 
 app = Flask(__name__)
 
-# The URL of the transflux service (defaulting to localhost for easy local dev outside container)
 TRANSFLUX_URL = os.environ.get("TRANSFLUX_URL", "http://localhost:8000").rstrip("/")
+
+def _proxy(method, path, timeout=5, **kwargs):
+    try:
+        r = requests.request(method, f"{TRANSFLUX_URL}{path}", timeout=timeout, **kwargs)
+        body = r.json() if r.content else {}
+        return jsonify(body), r.status_code
+    except requests.Timeout as e:
+        return jsonify({"error": str(e)}), 504
+    except requests.RequestException as e:
+        return jsonify({"error": str(e)}), 502
 
 @app.route("/")
 def index():
     return render_template("index.html")
 
-@app.route("/api/list", methods=["GET"])
+@app.route("/api/list")
 def get_list():
-    try:
-        response = requests.get(f"{TRANSFLUX_URL}/list", timeout=10)
-        return jsonify(response.json()), response.status_code
-    except requests.Timeout as e:
-        return jsonify({"error": str(e)}), 504
-    except requests.RequestException as e:
-        return jsonify({"error": str(e)}), 502
+    return _proxy("GET", "/list", timeout=10)
 
-@app.route("/api/version", methods=["GET"])
+@app.route("/api/version")
 def get_version():
-    try:
-        response = requests.get(f"{TRANSFLUX_URL}/version", timeout=5)
-        return jsonify(response.json()), response.status_code
-    except requests.Timeout as e:
-        return jsonify({"error": str(e)}), 504
-    except requests.RequestException as e:
-        return jsonify({"error": str(e)}), 502
+    return _proxy("GET", "/version")
 
-@app.route("/api/seaglass-version", methods=["GET"])
+@app.route("/api/seaglass-version")
 def get_seaglass_version():
+    version_path = os.path.join(os.path.dirname(__file__), "version.txt")
     try:
-        with open("version.txt", "r") as f:
-            return jsonify({"version": f.read().strip()}), 200
-    except Exception as e:
-        return jsonify({"version": "unknown"}), 200
+        with open(version_path) as f:
+            return jsonify({"version": f.read().strip()})
+    except OSError:
+        return jsonify({"version": "unknown"})
 
-@app.route("/api/status", methods=["GET"])
+@app.route("/api/status")
 def get_status():
-    try:
-        response = requests.get(f"{TRANSFLUX_URL}/status", timeout=5)
-        return jsonify(response.json()), response.status_code
-    except requests.Timeout as e:
-        return jsonify({"error": str(e)}), 504
-    except requests.RequestException as e:
-        return jsonify({"error": str(e)}), 502
+    return _proxy("GET", "/status")
 
 @app.route("/api/process/<hash>", methods=["PUT", "POST"])
 def process_hash(hash):
-    try:
-        # Transflux API expects a PUT /process/{hash}
-        response = requests.put(f"{TRANSFLUX_URL}/process/{hash}", timeout=5)
-        return jsonify(response.json()), response.status_code
-    except requests.Timeout as e:
-        return jsonify({"error": str(e)}), 504
-    except requests.RequestException as e:
-        return jsonify({"error": str(e)}), 502
+    return _proxy("PUT", f"/process/{hash}")
 
 @app.route("/api/cancel/<uuid>", methods=["DELETE"])
 def cancel_task(uuid):
-    try:
-        response = requests.delete(f"{TRANSFLUX_URL}/cancel/{uuid}", timeout=5)
-        if response.content:
-            return jsonify(response.json()), response.status_code
-        return jsonify({}), response.status_code
-    except requests.Timeout as e:
-        return jsonify({"error": str(e)}), 504
-    except requests.RequestException as e:
-        return jsonify({"error": str(e)}), 502
+    return _proxy("DELETE", f"/cancel/{uuid}")
 
 @app.route("/api/scan", methods=["PUT", "POST"])
 def scan_library():
-    try:
-        response = requests.put(f"{TRANSFLUX_URL}/scan", timeout=10)
-        return jsonify(response.json()), response.status_code
-    except requests.Timeout as e:
-        return jsonify({"error": str(e)}), 504
-    except requests.RequestException as e:
-        return jsonify({"error": str(e)}), 502
+    return _proxy("PUT", "/scan", timeout=10)
 
 @app.route("/api/quality", methods=["GET"])
 def get_quality():
-    try:
-        response = requests.get(f"{TRANSFLUX_URL}/quality", timeout=5)
-        return jsonify(response.json()), response.status_code
-    except requests.Timeout as e:
-        return jsonify({"error": str(e)}), 504
-    except requests.RequestException as e:
-        return jsonify({"error": str(e)}), 502
+    return _proxy("GET", "/quality")
 
 @app.route("/api/quality", methods=["POST"])
 def set_quality():
-    try:
-        response = requests.post(f"{TRANSFLUX_URL}/quality", json=request.json, timeout=5)
-        return jsonify(response.json()), response.status_code
-    except requests.Timeout as e:
-        return jsonify({"error": str(e)}), 504
-    except requests.RequestException as e:
-        return jsonify({"error": str(e)}), 502
+    return _proxy("POST", "/quality", json=request.json)
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
